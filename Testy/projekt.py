@@ -2,8 +2,8 @@ from microbit import i2c, pin8, pin12, pin14, pin15, button_a, button_b, sleep
 from utime import ticks_ms, ticks_us, ticks_diff
 from machine import time_pulse_us
 
-I2C_ADDR_PWM = 0x70
-TICK_PER_CIRCLE = 40
+MOTOR_I2C_ADDR = 0x70
+TICKS_PER_CIRCLE = 40
 
 class DirectionEnum:
     FORWARD = 1
@@ -62,7 +62,7 @@ class SpeedTicks:
         self.__ticks[newIndex] = ticks
         self.__index = newIndex
 
-    # Nech nas pracovat. Musime volat dostatecne casto (idealne jednou za setinu sekundy)
+    # Nech nas pracovat. Musime volat dostatecne casto
     def update(self, ticks):
         time = ticks_us()
         newIndex = self.getNewIndex(time)
@@ -78,7 +78,7 @@ class SpeedTicks:
         if count < 2:
             # nemame dost hodnot na spocteni rychlosti -> predpokladame ze na zacatku stojime a vracimne proto rychlost 0
             return 0
-        # zmenseni chyby, pokud nastane na krajnich hodnotach => zprumerujeme rychlost spoctenou z o 1 setinu starsimi daty
+        # zmenseni chyby, pokud nastane na krajnich hodnotach => zprumerujeme rychlost spoctenou z o 1 desetinu starsimi daty
         speed0 = self.__calculate(count, offset)
         speed1 = self.__calculate(count, offset+1)
         return  (speed0 + speed1) / 2
@@ -103,22 +103,6 @@ class Encoder:
         self.__oldValue = self.readPin()
         self.ticks = 0
         self.direction = DirectionEnum.UP
-
-#        self.__perioda_rychlosti = 1_000_000
-#        self.__cas_posledni_rychlosti = 0
-#        self.__radiany_za_sekundu = 0
-
-#    def vypocti_rychlost(self):
-#        cas_ted = ticks_us()
-#        interval_us = ticks_diff(cas_ted, self.__cas_posledni_rychlosti)
-#        if interval_us >= self.__perioda_rychlosti:
-#            interval_s = interval_us / 1_000_000
-#            otacky = self.ticks/40
-#            radiany = otacky * 6.28
-#            self.__radiany_za_sekundu = radiany / interval_s
-#            self.ticks = 0
-#            self.__cas_posledni_rychlosti = cas_ted
-#        return self.__radiany_za_sekundu
 
     def readPin(self):
         return self.__pin.read_digital()
@@ -147,11 +131,11 @@ class Encoder:
         if unit == UnitEnum.TicksPerSecond:
             return speed
         # uprav rychlost na otacky za sekundu
-        speed /= TICK_PER_CIRCLE
+        speed /= TICKS_PER_CIRCLE
         if unit == UnitEnum.CirclePerSecond:
             return speed
         # uprav rychlost na radiany za sekundu
-        speed *= 6.28
+        speed *= 2 * 3.14159265359879
         if unit == UnitEnum.RadianPerSecond:
             return speed
         # chceme nejakou jinou jednotku a to neumime spocitat
@@ -165,7 +149,7 @@ class RegulatorP:
 
     def isTimeout(self, time):
         diff = ticks_diff(time, self.__lastRegulationTime)
-        return  diff > self.__timeout_ms
+        return  diff >= self.__timeout_ms
 
     def getOutput(self, time, inputNominal, inputActual):
         self.__lastRegulationTime = time
@@ -177,30 +161,32 @@ class RegulatorP:
 class Senzors:
     ObstaleRight = 0x40
     ObstaleLeft = 0x20
+    LineTrackRight = 0x10
+    LineTrackMiddle = 0x08
+    LineTrackLeft = 0x04
 
     def __init__(self):
-        self.__lastTimeRead = 0
-        self.__timeout_ms = 250
-        self.__data = 0
+        self.__timeout_ms = 50
+        self.readData()
 
-    def readNewData(self, time=0):
-        self.__data = i2c.read(0x38, 1)
+    def readData(self, time=0):
+        self.__data = i2c.read(0x38, 1)[0]
         if time == 0:
             self.__lastTimeRead = ticks_ms()
         else:
             self.__lastTimeRead = time
 
     def getSenzor(self, senzor):
-        return (self.__data[0] & senzor) == 0
+        return (self.__data & senzor) == 0
 
     def isTimeout(self, time):
         diff = ticks_diff(time, self.__lastTimeRead)
-        return  diff > self.__timeout_ms
+        return  diff >= self.__timeout_ms
 
     def update(self):
         time = ticks_ms()
         if self.isTimeout(time):
-            self.readNewData(time)
+            self.readData(time)
 
 
 class Wheel:
@@ -221,12 +207,16 @@ class Wheel:
         else:
             self.__pwmNoBack = 0
             self.__pwmNoForw = 0
-        i2c.write(I2C_ADDR_PWM, bytes([0x00, 0x01]))
-        i2c.write(I2C_ADDR_PWM, bytes([0xE8, 0xAA]))
+        i2c.write(MOTOR_I2C_ADDR, bytes([0x00, 0x01]))
+        i2c.write(MOTOR_I2C_ADDR, bytes([0xE8, 0xAA]))
+
+    def emergencyShutdown(self):
+        self.speed = 0.0
+        self.writePWM(self.__pwmNoBack, self.__pwmNoForw, 0)
 
     def writePWM(self, offPwmNo, onPwmNo, pwm):
-        i2c.write(I2C_ADDR_PWM, bytes([offPwmNo, 0]))
-        i2c.write(I2C_ADDR_PWM, bytes([onPwmNo, pwm]))
+        i2c.write(MOTOR_I2C_ADDR, bytes([offPwmNo, 0]))
+        i2c.write(MOTOR_I2C_ADDR, bytes([onPwmNo, pwm]))
         self.__pwm = pwm
 #        print("Wheel.writePWM:", pwm)
         return 0
@@ -298,8 +288,11 @@ class MotionControl:
         self.velocity = Velocity()
         self.__wheelLeft = Wheel(DirectionEnum.LEFT, wheelDiameter / 2, calibrateLeft)
         self.__wheelRight = Wheel(DirectionEnum.RIGHT, wheelDiameter / 2,  calibrateRight)
-        self.__speedLeft = 0.0
-        self.__speedRight = 0.0
+
+    def emergencyShutdown(self):
+        self.newVelocity(0, 0)
+        self.__wheelLeft.emergencyShutdown()
+        self.__wheelRight.emergencyShutdown()
 
     def newVelocity(self, forward, angular):
         self.velocity.forward = forward
@@ -312,6 +305,8 @@ class MotionControl:
         self.__wheelRight.update()
 
 class Sonar:
+    MAX_DISTANCE = 10
+
     def __init__(self, timeoutMeasure):
         self.__trigger = pin8
         self.__trigger.write_digital(0)
@@ -336,7 +331,7 @@ class Sonar:
 
     def isTimeout(self, time):
         diff = ticks_diff(time, self.__lastMeasureTime)
-        return  diff > self.__timeout_ms
+        return  diff >= self.__timeout_ms
 
     def update(self):
         time = ticks_ms()
@@ -344,18 +339,23 @@ class Sonar:
             self.__lastReturned = self.calculateDistance(time)
             if self.__lastReturned > 0:
                 self.lastDistance = self.__lastReturned
+            if self.__lastReturned == -1:
+                self.lastDistance = self.MAX_DISTANCE
 
 class Robot:
     def __init__(self):
         i2c.init(freq=400_000)
         self.__senzors = Senzors()
         self.__sonar = Sonar(300)
-        self.__regulator = RegulatorP(15, 1_000)
+        self.__regulator = RegulatorP(50, 1_000)
         left = CalibrateFactors(1.861183, 50, 39, 11.4267317247637, 22.6641139347994)
         right = CalibrateFactors(2.017688, 50, 37, 12.0986865665863, 24.2334514165142)
         self.motionControl = MotionControl(0.15, 0.067, left, right)
         self.motionControl.newVelocity(1, 0)
         self.counterUpdate = 0
+
+    def emergencyShutdown(self):
+        self.motionControl.emergencyShutdown()
 
     def supplyVoltage(self):
         return 0.00898 * pin2.read_analog()
@@ -373,12 +373,10 @@ class Robot:
         else:
             sign = -1
         absSpeed = abs(speed)
-        if absSpeed > 7:
-            absSpeed = 7
-        elif absSpeed < 0.5:
-            absSpeed = 0
-        elif absSpeed < 2.5:
-            absSpeed = 2.5
+        if absSpeed > 15:
+            absSpeed = 15
+        elif absSpeed < 4:
+            absSpeed = 4
         return sign * absSpeed
 
     def regulateSpeed(self):
@@ -386,11 +384,15 @@ class Robot:
         if self.__regulator.isTimeout(time):
             self.counterUpdate += 1
             distance = self.getObstacleDistance()
-            print(distance)
-            newSpeedForward = self.__regulator.getOutput(time, -0.2, -distance)
-            newSpeedLimit = self.speedLimitation(newSpeedForward)
-            print("regualteSpeed:", distance, newSpeedForward, newSpeedLimit)
+            distanceDif = abs(distance-0.2)
+            if distanceDif < 0.01:      # prilis mala odchylka?
+                newSpeedForward = 0     # ano -> uz to nechame byt
+                newSpeedLimit = 0
+            else:                       # regulujeme rychlost podle rozdilu vzdalenosti od prekazky
+                newSpeedForward = self.__regulator.getOutput(time, -0.2, -distance)
+                newSpeedLimit = self.speedLimitation(newSpeedForward)
             self.motionControl.newVelocity(newSpeedLimit, 0)
+#            print("Distance:", distance, distanceDif, "  SpeedControl:", newSpeedForward, "/", newSpeedLimit, "SpeedVheel:", self.motionControl.__wheelLeft.speed, "/", self.motionControl.__wheelLeft.getSpeed(UnitEnum.RadianPerSecond), "|", self.motionControl.__wheelRight.speed, "/", self.motionControl.__wheelRight.getSpeed(UnitEnum.RadianPerSecond))
 
     def update(self):
         self.motionControl.update()
@@ -401,23 +403,28 @@ class Robot:
 
 def main():
     robot = Robot()
-    speed = 4
-    robot.motionControl.newVelocity(speed, 0)
-    lastPrint = 0
-    while not button_a.was_pressed():
-        if button_b.was_pressed():
-            speed *= -1
-            robot.motionControl.newVelocity(speed, 0)
-        robot.update()
-        time = ticks_ms()
-        diff = ticks_diff(time, lastPrint)
-        if diff > 1_000:
-            lastPrint = time
-            speedL = robot.motionControl.__wheelLeft.getSpeed(UnitEnum.RadianPerSecond)
-            speedR = robot.motionControl.__wheelRight.getSpeed(UnitEnum.RadianPerSecond)
-            print(speedL, speedR, robot.__sonar.lastDistance, robot.counterUpdate)
-        sleep(1)
-    robot.motionControl.newVelocity(0, 0)
+    try:
+        speed = 4
+        robot.motionControl.newVelocity(speed, 0)
+        lastPrint = 0
+        while not button_a.was_pressed():
+            if button_b.was_pressed():
+                speed *= -1
+                robot.motionControl.newVelocity(speed, 0)
+            robot.update()
+            time = ticks_ms()
+            diff = ticks_diff(time, lastPrint)
+            if diff > 1_000:
+                lastPrint = time
+                speedL = robot.motionControl.__wheelLeft.getSpeed(UnitEnum.RadianPerSecond)
+                speedR = robot.motionControl.__wheelRight.getSpeed(UnitEnum.RadianPerSecond)
+#                print(speedL, speedR, robot.__sonar.lastDistance, robot.counterUpdate)
+            sleep(1)
+        robot.motionControl.newVelocity(0, 0)
+    except BaseException as e:
+        print("---------- Nastala nejaka chyba -> vsechno vypnout!")
+        robot.emergencyShutdown()
+        raise e
 
 if __name__ == "__main__":
     main()
