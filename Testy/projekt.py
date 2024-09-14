@@ -128,7 +128,7 @@ class Encoder:
             self.__oldValue = newValue
         self.__speedTicks.update(self.ticks)
 
-    def getSpeed(self, unit, count, offset):
+    def getSpeed(self, unit, count=5, offset=0):
         # nejpre spocti rychlost v tikach za sekundu
         speed = self.__speedTicks.calculate(count, offset)
         if unit == UnitEnum.TicksPerSecond:
@@ -260,8 +260,8 @@ class Wheel:
         origPwm = pwm
         pwm = int(pwm)
         pwm = self.checkMinimumPwm(pwm)
-        if self.__place == DirectionEnum.RIGHT:
-            print("Wheel.ridePwm - speed:", self.speed, "  pwm:", pwm, origPwm)
+#        if self.__place == DirectionEnum.RIGHT:
+#            print("Wheel.ridePwm - speed:", self.speed, "  pwm:", pwm, origPwm)
         if pwm < 0:                                                                     # zkontroluj nejmensi hodnotu
             return -1
         if pwm > 255:                                                                   # zkontroluj nejvetsi hodnotu
@@ -286,10 +286,10 @@ class Wheel:
             newPwm  = 0
         return self.__ridePwm(newPwm)
 
-    def getSpeed(self, unit):
+    def getSpeed(self, unit, count=5, offset=0):
         if unit == UnitEnum.MeterPerSecond:
-            return self.radius * self.__encoder.getSpeed(UnitEnum.RadianPerSecond)
-        return self.__encoder.getSpeed(unit)
+            return self.radius * self.__encoder.getSpeed(UnitEnum.RadianPerSecond, count, offset)
+        return self.__encoder.getSpeed(unit, count, offset)
 
     def regulate(self):
         time = ticks_ms()
