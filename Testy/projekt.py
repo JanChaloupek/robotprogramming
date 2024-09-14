@@ -26,14 +26,11 @@ class Velocity:
 
 class CalibrateFactors:
     def __init__(self, min_rychlost, min_pwm_rozjezd, min_pwm_dojezd, a, b):
-        self.min_speed = min_rychlost
-        self.min_pwm_up = min_pwm_rozjezd
-        self.min_pwm_down = min_pwm_dojezd
-        self.a = a - 4.3
-        self.b = b - 2
-
-    def getPwmFromSpeed(self, speed):
-        return self.a * speed + self.b
+        self.minimum_speed = min_rychlost
+        self.minimum_pwm_when_stopped = min_pwm_rozjezd
+        self.minimum_pwm_in_motion = min_pwm_dojezd
+        self.a = a
+        self.b = b
 
 class SpeedTicks:
     # pocet desetin pro ktere si pamatujeme hodnoty
@@ -44,6 +41,7 @@ class SpeedTicks:
         self.__ticks = [0] * self.LIMIT
         self.__countValues = -1  # ani prvni hodnotu nechci brat jako správnou (bude ignorovana)
         self.__lastTime = -1
+        self.isStopped = True
 
     # Zjisti z casu jestli uz muzeme ulozit data do dalsiho indexu
     def getNewIndex(self, time: int):
@@ -58,6 +56,8 @@ class SpeedTicks:
     def nextValues(self, newIndex, time, ticks):
         if self.__countValues < self.LIMIT:                 # jeste nemame vsechny hodnoty pole zaplnene?
             self.__countValues += 1                         # ano -> pricteme ze mame dalsi hodnotu
+            if self.__countValues > 10:
+                self.isStopped = (self.__ticks[self.__index]-ticks) == 0
         self.__times[newIndex] = time
         self.__ticks[newIndex] = ticks
         self.__index = newIndex
@@ -104,6 +104,9 @@ class Encoder:
         self.ticks = 0
         self.direction = DirectionEnum.UP
 
+    def isStopped(self):
+        return self.__speedTicks.isStopped
+
     def readPin(self):
         return self.__pin.read_digital()
 
@@ -125,9 +128,9 @@ class Encoder:
             self.__oldValue = newValue
         self.__speedTicks.update(self.ticks)
 
-    def getSpeed(self, unit):
+    def getSpeed(self, unit, count, offset):
         # nejpre spocti rychlost v tikach za sekundu
-        speed = self.__speedTicks.calculate()
+        speed = self.__speedTicks.calculate(count, offset)
         if unit == UnitEnum.TicksPerSecond:
             return speed
         # uprav rychlost na otacky za sekundu
@@ -135,7 +138,7 @@ class Encoder:
         if unit == UnitEnum.CirclePerSecond:
             return speed
         # uprav rychlost na radiany za sekundu
-        speed *= 2 * 3.14159265359879
+        speed *= (2 * 3.1416)
         if unit == UnitEnum.RadianPerSecond:
             return speed
         # chceme nejakou jinou jednotku a to neumime spocitat
@@ -214,12 +217,23 @@ class Wheel:
         self.speed = 0.0
         self.writePWM(self.__pwmNoBack, self.__pwmNoForw, 0)
 
+    def isStopped(self):
+        return self.__encoder.isStopped()
+
+    def getMinimumSpeed(self):
+        return self.__calibrateFactors.minimum_speed
+
     def writePWM(self, offPwmNo, onPwmNo, pwm):
         i2c.write(MOTOR_I2C_ADDR, bytes([offPwmNo, 0]))
         i2c.write(MOTOR_I2C_ADDR, bytes([onPwmNo, pwm]))
         self.__pwm = pwm
-#        print("Wheel.writePWM:", pwm)
+#        print("Wheel.writePWM:", pwm if self.direction == DirectionEnum.FORWARD else -pwm)
         return 0
+
+    def getPwmFromSpeed(self, speed):
+        if speed==0.0:
+            return 0
+        return self.__calibrateFactors.a * speed + self.__calibrateFactors.b
 
     def rideSpeed(self, speed):
         self.speed = speed
@@ -227,12 +241,27 @@ class Wheel:
             self.direction = DirectionEnum.FORWARD
         else:
             self.direction = DirectionEnum.BACK
-        pwm = self.__calibrateFactors.getPwmFromSpeed(abs(speed))
+        pwm = self.getPwmFromSpeed(abs(speed))
 #        print("wheel.rideSpeed:", self.speed, pwm, self.direction)
         self.__ridePwm(pwm)
 
+    # pokud je rychlost kterou chceme jed ruzna od 0, musime korigovat pwm aby nekleslo pod minimalni hodnotu
+    def checkMinimumPwm(self, pwm):
+        if self.speed != 0.0:
+            if (self.isStopped()):
+                minimum_pwm = self.__calibrateFactors.minimum_pwm_when_stopped
+            else:
+                minimum_pwm = self.__calibrateFactors.minimum_pwm_in_motion
+            if pwm < minimum_pwm:
+                pwm = minimum_pwm
+        return pwm
+
     def __ridePwm(self, pwm):
+        origPwm = pwm
         pwm = int(pwm)
+        pwm = self.checkMinimumPwm(pwm)
+        if self.__place == DirectionEnum.RIGHT:
+            print("Wheel.ridePwm - speed:", self.speed, "  pwm:", pwm, origPwm)
         if pwm < 0:                                                                     # zkontroluj nejmensi hodnotu
             return -1
         if pwm > 255:                                                                   # zkontroluj nejvetsi hodnotu
@@ -266,17 +295,12 @@ class Wheel:
         time = ticks_ms()
         if self.__regulator.isTimeout(time):
             measureSpeed = self.__encoder.getSpeed(UnitEnum.RadianPerSecond)
-#            measureSpeed = self.__encoder.vypocti_rychlost()
-#            print("Wheel.regulate - speed:", measureSpeed, self.speed)
-
             changeValue = self.__regulator.getOutput(time, self.speed, measureSpeed)
-#            print("Wheel.regulate . changePwm", changeValue)
+#            print("Wheel.regulate - speed:", measureSpeed, self.speed, "  changeValue:", changeValue)
             self.__changePwm(changeValue)
 
     def convertWhellDirectionToEncoder(self):
-        if self.direction == DirectionEnum.BACK:
-            return DirectionEnum.DOWN
-        return DirectionEnum.UP
+        return DirectionEnum.UP if self.direction == DirectionEnum.FORWARD else DirectionEnum.DOWN
 
     def update(self):
         self.__encoder.update(self.convertWhellDirectionToEncoder())
@@ -290,9 +314,17 @@ class MotionControl:
         self.__wheelRight = Wheel(DirectionEnum.RIGHT, wheelDiameter / 2,  calibrateRight)
 
     def emergencyShutdown(self):
-        self.newVelocity(0, 0)
-        self.__wheelLeft.emergencyShutdown()
-        self.__wheelRight.emergencyShutdown()
+        try:
+            self.newVelocity(0, 0)
+        except BaseException as e:
+            self.__wheelLeft.emergencyShutdown()
+            self.__wheelRight.emergencyShutdown()
+            raise e
+
+    def getMinimumSpeed(self):
+        minimumLeft = self.__wheelLeft.getMinimumSpeed()
+        minimumRight = self.__wheelRight.getMinimumSpeed()
+        return max(minimumLeft, minimumRight)
 
     def newVelocity(self, forward, angular):
         self.velocity.forward = forward
@@ -343,14 +375,12 @@ class Sonar:
                 self.lastDistance = self.MAX_DISTANCE
 
 class Robot:
-    def __init__(self):
+    def __init__(self, leftCalibrate, rightCalibrate):
         i2c.init(freq=400_000)
         self.__senzors = Senzors()
         self.__sonar = Sonar(300)
         self.__regulator = RegulatorP(50, 1_000)
-        left = CalibrateFactors(1.861183, 50, 39, 11.4267317247637, 22.6641139347994)
-        right = CalibrateFactors(2.017688, 50, 37, 12.0986865665863, 24.2334514165142)
-        self.motionControl = MotionControl(0.15, 0.067, left, right)
+        self.motionControl = MotionControl(0.15, 0.067, leftCalibrate, rightCalibrate)
         self.motionControl.newVelocity(1, 0)
         self.counterUpdate = 0
 
@@ -373,10 +403,12 @@ class Robot:
         else:
             sign = -1
         absSpeed = abs(speed)
-        if absSpeed > 15:
-            absSpeed = 15
-        elif absSpeed < 4:
-            absSpeed = 4
+        maxSpeed = 10
+        minSpeed = self.motionControl.getMinimumSpeed()
+        if absSpeed > maxSpeed:
+            absSpeed = maxSpeed
+        elif absSpeed < minSpeed:
+            absSpeed = minSpeed
         return sign * absSpeed
 
     def regulateSpeed(self):
@@ -402,7 +434,9 @@ class Robot:
         self.regulateSpeed()
 
 def main():
-    robot = Robot()
+    leftCalibrate  = CalibrateFactors(3.0, 110, 75, 11.692, 28.643)
+    rightCalibrate = CalibrateFactors(3.0, 110, 75, 12.259, 30.332)
+    robot = Robot(leftCalibrate, rightCalibrate)
     try:
         speed = 4
         robot.motionControl.newVelocity(speed, 0)
