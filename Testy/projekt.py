@@ -56,7 +56,8 @@ class SpeedTicks:
     def nextValues(self, newIndex, time, ticks):
         if self.__countValues < self.LIMIT:                 # jeste nemame vsechny hodnoty pole zaplnene?
             self.__countValues += 1                         # ano -> pricteme ze mame dalsi hodnotu
-            if self.__countValues > 10:
+            # pokud mas alespon 2 hodnoty, odhadni jestli stojime, tj rychlost je tak mala ze za 100 ms neprisel zadny tik
+            if self.__countValues > 2:
                 self.isStopped = (self.__ticks[self.__index]-ticks) == 0
         self.__times[newIndex] = time
         self.__ticks[newIndex] = ticks
