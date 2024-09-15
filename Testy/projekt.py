@@ -1,19 +1,24 @@
-from microbit import i2c, pin8, pin12, pin14, pin15, button_a, button_b, sleep
+from neopixel import NeoPixel
+from microbit import i2c, pin0, pin8, pin12, pin14, pin15, button_a, button_b, sleep
 from utime import ticks_ms, ticks_us, ticks_diff
 from machine import time_pulse_us
 
 MOTOR_I2C_ADDR = 0x70
 TICKS_PER_CIRCLE = 40
 
-class DirectionEnum:
-    FORWARD = 1
-    BACK =  2
-    LEFT = 11
-    RIGHT = 12
-    UP = 21
-    DOWN = 22
+class Direction:
+    NONE = 0
+    LEFT = 1
+    RIGHT = 2
+    FORWARD = 11
+    BACK =  12
 
-class UnitEnum:
+class HeadLightEnum:
+    OFF = 0
+    POTKAVACI = 1
+    DALKOVA = 2
+
+class Unit:
     TicksPerSecond = 1
     CirclePerSecond = 2
     RadianPerSecond = 3
@@ -26,124 +31,11 @@ class Velocity:
 
 class CalibrateFactors:
     def __init__(self, min_rychlost, min_pwm_rozjezd, min_pwm_dojezd, a, b):
-        self.minimum_speed = min_rychlost
-        self.minimum_pwm_when_stopped = min_pwm_rozjezd
-        self.minimum_pwm_in_motion = min_pwm_dojezd
+        self.minSpeed = min_rychlost
+        self.minPwmWhenStopped = min_pwm_rozjezd
+        self.minPwmInMotion = min_pwm_dojezd
         self.a = a
         self.b = b
-
-class SpeedTicks:
-    # pocet desetin pro ktere si pamatujeme hodnoty
-    LIMIT = 50
-    def __init__(self):
-        self.__index = -1        # prvni hodnota bude ulozena do indexu 0 (coz je -1 + 1)
-        self.__times = [0] * self.LIMIT
-        self.__ticks = [0] * self.LIMIT
-        self.__countValues = -1  # ani prvni hodnotu nechci brat jako správnou (bude ignorovana)
-        self.__lastTime = -1
-        self.isStopped = True
-
-    # Zjisti z casu jestli uz muzeme ulozit data do dalsiho indexu
-    def getNewIndex(self, time: int):
-        newTime = int(time / 100_000)                       # cas v microsekundach prevedu na desetiny sekundy
-        if newTime == self.__lastTime:
-            return -1
-        else:
-            self.__lastTime = newTime
-            return (self.__index + 1) % self.LIMIT
-
-    # Ulozime nove hodnoty do pole
-    def nextValues(self, newIndex, time, ticks):
-        if self.__countValues < self.LIMIT:                 # jeste nemame vsechny hodnoty pole zaplnene?
-            self.__countValues += 1                         # ano -> pricteme ze mame dalsi hodnotu
-            # pokud mas alespon 2 hodnoty, odhadni jestli stojime, tj rychlost je tak mala ze za 100 ms neprisel zadny tik
-            if self.__countValues > 2:
-                self.isStopped = (self.__ticks[self.__index]-ticks) == 0
-        self.__times[newIndex] = time
-        self.__ticks[newIndex] = ticks
-        self.__index = newIndex
-
-    # Nech nas pracovat. Musime volat dostatecne casto
-    def update(self, ticks):
-        time = ticks_us()
-        newIndex = self.getNewIndex(time)
-        if newIndex >= 0:
-            self.nextValues(newIndex, time, ticks)
-
-    # spoci rychlost v  tikach za sekundu (count je pocet hodnot ktere pouzije pro vypocet, offset je pocet hodnot o ktere se posuneme do minulosti)
-    def calculate(self, count=5, offset=0):
-        if count < 2:
-            count = 10
-        if count+offset >= self.__countValues:
-            count = self.__countValues - offset - 1
-        if count < 2:
-            # nemame dost hodnot na spocteni rychlosti -> predpokladame ze na zacatku stojime a vracimne proto rychlost 0
-            return 0
-        # zmenseni chyby, pokud nastane na krajnich hodnotach => zprumerujeme rychlost spoctenou z o 1 desetinu starsimi daty
-        speed0 = self.__calculate(count, offset)
-        speed1 = self.__calculate(count, offset+1)
-        return  (speed0 + speed1) / 2
-
-    # spocteni rychlosti za definovanych podminek (nejsou potreba kontroly, ty se provedli ve vnejsi funkci)
-    def __calculate(self, count, offset):
-        endIndex = (self.__index - offset) % self.LIMIT
-        startIndex = (endIndex - count + 1) % self.LIMIT
-        diffTimes = self.__times[endIndex] - self.__times[startIndex]
-        diffTicks = self.__ticks[endIndex] - self.__ticks[startIndex]
-        # rychlost = pocet tiku za 1s (tj. za 1_000_000 us)
-        return 1_000_000 * diffTicks / diffTimes
-
-
-class Encoder:
-    def __init__(self, place):
-        if place == DirectionEnum.LEFT:
-            self.__pin = pin14
-        else:
-            self.__pin = pin15
-        self.__speedTicks = SpeedTicks()
-        self.__oldValue = self.readPin()
-        self.ticks = 0
-        self.direction = DirectionEnum.UP
-
-    def isStopped(self):
-        return self.__speedTicks.isStopped
-
-    def readPin(self):
-        return self.__pin.read_digital()
-
-    def nextTick(self):
-        if self.direction == DirectionEnum.UP:
-            self.ticks += 1
-            return 0
-        if self.direction == DirectionEnum.DOWN:
-            self.ticks -= 1
-            return 0
-        return -1
-
-    # Nech nas pracovat. Musime volat dostatecne casto (idealne casteji nez budou prichazet tiky)
-    def update(self, direction):
-        self.direction = direction
-        newValue = self.readPin()
-        if (newValue != self.__oldValue):
-            self.nextTick()
-            self.__oldValue = newValue
-        self.__speedTicks.update(self.ticks)
-
-    def getSpeed(self, unit, count=5, offset=0):
-        # nejpre spocti rychlost v tikach za sekundu
-        speed = self.__speedTicks.calculate(count, offset)
-        if unit == UnitEnum.TicksPerSecond:
-            return speed
-        # uprav rychlost na otacky za sekundu
-        speed /= TICKS_PER_CIRCLE
-        if unit == UnitEnum.CirclePerSecond:
-            return speed
-        # uprav rychlost na radiany za sekundu
-        speed *= (2 * 3.1416)
-        if unit == UnitEnum.RadianPerSecond:
-            return speed
-        # chceme nejakou jinou jednotku a to neumime spocitat
-        return 0
 
 class RegulatorP:
     def __init__(self, p, timeout_ms):
@@ -159,7 +51,6 @@ class RegulatorP:
         self.__lastRegulationTime = time
         error = inputNominal - inputActual
         changeValue = self.__k * error
-#        print("regulator.getOutput - input:", inputNominal, inputActual, error, changeValue)
         return changeValue
 
 class Senzors:
@@ -192,6 +83,238 @@ class Senzors:
         if self.isTimeout(time):
             self.readData(time)
 
+class IndicatorState:
+    NONE = 0
+    SPACE = 1
+    LIGHT = 2
+    def __init__(self):
+        self.reset()
+
+    def reset(self):
+        self.set(self.NONE)
+
+    def set(self, value):
+        self.value = value
+        self.start = ticks_ms()
+
+    def isDiferent(self, other):
+        return self.value != other
+
+    def timeout(self):
+        return ticks_diff(ticks_ms(), self.start) > 400
+
+    def change(self):
+        self.set(self.SPACE if self.value == self.LIGHT else self.LIGHT)
+
+    def update(self):
+        if self.value != self.NONE:
+            if self.timeout():
+                self.change()
+        else:
+            self.set(self.LIGHT)
+
+class Lights:
+    color_led_off = (0, 0, 0)
+    color_led_orange = (100, 35, 0)
+    color_led_white = (60, 60, 60)
+    color_led_white_hi = (255, 255, 255)
+    color_led_red = (60, 0, 0)
+    color_led_red_br = (255, 0, 0)
+
+    def __init__(self):
+        self.__np = NeoPixel(pin0, 8)
+        self.__writeTime = 0
+
+    def setColor(self, ledNo, color):
+        self.__np[ledNo] = color
+
+    def setColorToLedList(self, ledList, color):
+        for ledNo in ledList:
+            self.setColor(ledNo, color)
+
+    def isTimeout(self):
+        return ticks_diff(ticks_ms(), self.__writeTime) > 100
+
+    def write(self):
+        self.__np.write()
+        self.__writeTime = ticks_ms()
+
+class LightsControl:
+    ind_all = (1, 2, 4, 7)
+    ind_left = (1, 4)
+    ind_right = (2, 7)
+    head_lights = (0, 3)
+    back_lights = (5, 6)
+    inside_light = (0, 3, 5, 6)
+    reverse_lights = (5,)
+    def __init__(self, velocity):
+        self.__lights = Lights()
+        self.__indState = IndicatorState()
+        self.__velocity = velocity
+        self.setMain(HeadLightEnum.POTKAVACI)
+        self.setDirectionFromVelocity()
+        self.setReverseFromVelocity()
+        self.__isBrake = False
+        self.__brakeTime = 0
+        self.warning = False
+
+    def setMain(self, value):
+        self.__main = value
+
+    def setDirectionFromVelocity(self):
+        if self.__velocity.angular > 0.0:
+            self.__indDirection = Direction.LEFT
+        elif self.__velocity.angular < 0.0:
+            self.__indDirection = Direction.RIGHT
+        else:
+            self.__indDirection = Direction.NONE
+
+    def setReverseFromVelocity(self):
+        self.__isReverse = self.__velocity.forward < 0.0
+
+    def setBrakeFromVelocity(self):
+        if False:
+            self.__isBrake = True
+            self.__brakeTime = ticks_ms()
+
+    def isBrake(self):
+        if self.__isBrake:
+            diff = ticks_diff(ticks_ms(), self.__brakeTime)
+            if diff < 1_000:
+                return True
+            self.__isBrake = False
+        return False
+
+    def update(self):
+        self.setDirectionFromVelocity()
+        self.setReverseFromVelocity()
+        self.setBrakeFromVelocity()
+        backupState = self.__indState.value
+        if self.__indDirection != Direction.NONE or self.warning:
+            self.__indState.update()
+        else:
+            self.__indState.reset()
+        if self.__indState.isDiferent(backupState) or self.__lights.isTimeout():
+            if self.__indState.value == IndicatorState.LIGHT:
+                if self.__direction == Direction.LEFT or self.warning:
+                    self.__lights.setColorToLedList(self.ind_left, Lights.color_led_orange)
+                if self.__direction == Direction.RIGHT or self.warning:
+                    self.__lights.setColorToLedList(self.ind_right, Lights.color_led_orange)
+            else:
+                self.__lights.setColorToLedList(self.ind_all, Lights.color_led_off)
+            headColor = Lights.color_led_off
+            backColor = Lights.color_led_off
+            if self.__main == HeadLightEnum.POTKAVACI:
+                headColor = Lights.color_led_white
+                backColor = Lights.color_led_red
+            if self.__main == HeadLightEnum.DALKOVA:
+                headColor = Lights.color_led_white_hi
+                backColor = Lights.color_led_red
+            if self.isBrake():
+                backColor = Lights.color_led_red_br
+            self.__lights.setColorToLedList(self.head_lights, headColor)
+            self.__lights.setColorToLedList(self.back_lights, backColor)
+            if self.__isReverse:
+                self.__lights.setColorToLedList(self.reverse_lights, Lights.color_led_white)
+            self.__lights.write()
+
+class SpeedTicks:
+    LIMIT = 50
+    def __init__(self):
+        self.__index = -1
+        self.__times = [0] * self.LIMIT
+        self.__ticks = [0] * self.LIMIT
+        self.__countValues = -1
+        self.__lastTime = -1
+        self.isStopped = True
+
+    # Zjisti z casu jestli uz muzeme ulozit data do dalsiho indexu
+    def getNewIndex(self, time: int):
+        newTime = int(time / 100_000)
+        if newTime == self.__lastTime:
+            return -1
+        else:
+            self.__lastTime = newTime
+            return (self.__index + 1) % self.LIMIT
+
+    def nextValues(self, newIndex, time, ticks):
+        if self.__countValues < self.LIMIT:
+            self.__countValues += 1
+            if self.__countValues > 2:
+                self.isStopped = (self.__ticks[self.__index]-ticks) == 0
+        self.__times[newIndex] = time
+        self.__ticks[newIndex] = ticks
+        self.__index = newIndex
+
+    def update(self, ticks):
+        time = ticks_us()
+        newIndex = self.getNewIndex(time)
+        if newIndex >= 0:
+            self.nextValues(newIndex, time, ticks)
+
+    def calculate(self, count=5, offset=0):
+        if count < 2:
+            count = 10
+        if count+offset >= self.__countValues:
+            count = self.__countValues - offset - 1
+        if count < 2:
+            return 0
+        speed0 = self.__calculate(count, offset)
+        speed1 = self.__calculate(count, offset+1)
+        return  (speed0 + speed1) / 2
+
+    def __calculate(self, count, offset):
+        endIndex = (self.__index - offset) % self.LIMIT
+        startIndex = (endIndex - count + 1) % self.LIMIT
+        diffTimes = self.__times[endIndex] - self.__times[startIndex]
+        diffTicks = self.__ticks[endIndex] - self.__ticks[startIndex]
+        return 1_000_000 * diffTicks / diffTimes
+
+class Encoder:
+    def __init__(self, place):
+        if place == Direction.LEFT:
+            self.__pin = pin14
+        else:
+            self.__pin = pin15
+        self.__speedTicks = SpeedTicks()
+        self.__oldValue = self.readPin()
+        self.ticks = 0
+        self.direction = Direction.FORWARD
+
+    def isStopped(self):
+        return self.__speedTicks.isStopped
+
+    def readPin(self):
+        return self.__pin.read_digital()
+
+    def nextTick(self):
+        if self.direction == Direction.FORWARD:
+            self.ticks += 1
+            return 0
+        if self.direction == Direction.BACK:
+            self.ticks -= 1
+            return 0
+        return -1
+
+    def update(self, direction):
+        self.direction = direction
+        newValue = self.readPin()
+        if (newValue != self.__oldValue):
+            self.nextTick()
+            self.__oldValue = newValue
+        self.__speedTicks.update(self.ticks)
+
+    def getSpeed(self, unit, count=5, offset=0):
+        speed = self.__speedTicks.calculate(count, offset)
+        if unit == Unit.TicksPerSecond:
+            return speed
+        speed /= TICKS_PER_CIRCLE
+        if unit == Unit.CirclePerSecond:
+            return speed
+        speed *= (2 * 3.1416)
+        if unit == Unit.RadianPerSecond:
+            return speed
+        return 0
 
 class Wheel:
     def __init__(self, place, radius, calibrateFactors):
@@ -201,11 +324,11 @@ class Wheel:
         self.__calibrateFactors = calibrateFactors
         self.radius = radius
         self.speed = 0.0
-        self.direction = DirectionEnum.FORWARD
-        if place == DirectionEnum.RIGHT:
+        self.direction = Direction.FORWARD
+        if place == Direction.RIGHT:
             self.__pwmNoBack = 2
             self.__pwmNoForw = 3
-        elif place == DirectionEnum.LEFT:
+        elif place == Direction.LEFT:
             self.__pwmNoBack = 4
             self.__pwmNoForw = 5
         else:
@@ -222,14 +345,12 @@ class Wheel:
         return self.__encoder.isStopped()
 
     def getMinimumSpeed(self):
-        return self.__calibrateFactors.minimum_speed
+        return self.__calibrateFactors.minSpeed
 
     def writePWM(self, offPwmNo, onPwmNo, pwm):
         i2c.write(MOTOR_I2C_ADDR, bytes([offPwmNo, 0]))
         i2c.write(MOTOR_I2C_ADDR, bytes([onPwmNo, pwm]))
         self.__pwm = pwm
-#        print("Wheel.writePWM:", pwm if self.direction == DirectionEnum.FORWARD else -pwm)
-        return 0
 
     def getPwmFromSpeed(self, speed):
         if speed==0.0:
@@ -239,47 +360,43 @@ class Wheel:
     def rideSpeed(self, speed):
         self.speed = speed
         if self.speed >= 0:
-            self.direction = DirectionEnum.FORWARD
+            self.direction = Direction.FORWARD
         else:
-            self.direction = DirectionEnum.BACK
+            self.direction = Direction.BACK
         pwm = self.getPwmFromSpeed(abs(speed))
-#        print("wheel.rideSpeed:", self.speed, pwm, self.direction)
         self.__ridePwm(pwm)
 
-    # pokud je rychlost kterou chceme jed ruzna od 0, musime korigovat pwm aby nekleslo pod minimalni hodnotu
     def checkMinimumPwm(self, pwm):
         if self.speed != 0.0:
             if (self.isStopped()):
-                minimum_pwm = self.__calibrateFactors.minimum_pwm_when_stopped
+                minPwm = self.__calibrateFactors.minPwmWhenStopped
             else:
-                minimum_pwm = self.__calibrateFactors.minimum_pwm_in_motion
-            if pwm < minimum_pwm:
-                pwm = minimum_pwm
+                minPwm = self.__calibrateFactors.minPwmInMotion
+            if pwm < minPwm:
+                pwm = minPwm
         return pwm
 
     def __ridePwm(self, pwm):
         origPwm = pwm
         pwm = int(pwm)
         pwm = self.checkMinimumPwm(pwm)
-#        if self.__place == DirectionEnum.RIGHT:
-#            print("Wheel.ridePwm - speed:", self.speed, "  pwm:", pwm, origPwm)
-        if pwm < 0:                                                                     # zkontroluj nejmensi hodnotu
-            return -1
-        if pwm > 255:                                                                   # zkontroluj nejvetsi hodnotu
-            return -2
+        if pwm < 0:
+            return
+        if pwm > 255:
+            return
         if self.__pwmNoForw>0 and self.__pwmNoBack>0:
-            if self.direction == DirectionEnum.FORWARD:                                 # pokud jedeme dopredu
-                return self.writePWM(self.__pwmNoBack, self.__pwmNoForw, pwm)           # -> nastav pwm dopredu
-            if self.direction == DirectionEnum.BACK:                                    # pokud jedeme vzad
-                return self.writePWM(self.__pwmNoForw, self.__pwmNoBack, pwm)           # -> nastav pwm dozadu
-            return -3                                                                   # neznamy smer
-        return -4                                                                       # spatne definovane kolo (ani leve ani prave)
+            if self.direction == Direction.FORWARD:
+                return self.writePWM(self.__pwmNoBack, self.__pwmNoForw, pwm)
+            if self.direction == Direction.BACK:
+                return self.writePWM(self.__pwmNoForw, self.__pwmNoBack, pwm)
+            return
+        return
 
     def __changePwm(self, changeValue):
         newPwm = 0
-        if self.direction == DirectionEnum.FORWARD:
+        if self.direction == Direction.FORWARD:
             newPwm = self.__pwm + changeValue
-        if self.direction == DirectionEnum.BACK:
+        if self.direction == Direction.BACK:
             newPwm = self.__pwm - changeValue
         if newPwm > 255:
             newPwm = 255
@@ -288,31 +405,28 @@ class Wheel:
         return self.__ridePwm(newPwm)
 
     def getSpeed(self, unit, count=5, offset=0):
-        if unit == UnitEnum.MeterPerSecond:
-            return self.radius * self.__encoder.getSpeed(UnitEnum.RadianPerSecond, count, offset)
+        if unit == Unit.MeterPerSecond:
+            return self.radius * self.__encoder.getSpeed(Unit.RadianPerSecond, count, offset)
         return self.__encoder.getSpeed(unit, count, offset)
 
     def regulate(self):
         time = ticks_ms()
         if self.__regulator.isTimeout(time):
-            measureSpeed = self.__encoder.getSpeed(UnitEnum.RadianPerSecond)
+            measureSpeed = self.__encoder.getSpeed(Unit.RadianPerSecond)
             changeValue = self.__regulator.getOutput(time, self.speed, measureSpeed)
-#            print("Wheel.regulate - speed:", measureSpeed, self.speed, "  changeValue:", changeValue)
             self.__changePwm(changeValue)
 
-    def convertWhellDirectionToEncoder(self):
-        return DirectionEnum.UP if self.direction == DirectionEnum.FORWARD else DirectionEnum.DOWN
-
     def update(self):
-        self.__encoder.update(self.convertWhellDirectionToEncoder())
+        self.__encoder.update(self.direction)
         self.regulate()
 
 class MotionControl:
-    def __init__(self, wheelbase, wheelDiameter, calibrateLeft, calibrateRight):
+    def __init__(self, wheelbase, wheelDiameter, velocity, calibrateLeft, calibrateRight):
         self.__d = wheelbase / 2
-        self.velocity = Velocity()
-        self.__wheelLeft = Wheel(DirectionEnum.LEFT, wheelDiameter / 2, calibrateLeft)
-        self.__wheelRight = Wheel(DirectionEnum.RIGHT, wheelDiameter / 2,  calibrateRight)
+        self.__r = wheelDiameter / 2
+        self.velocity = velocity
+        self.__wheelLeft = Wheel(Direction.LEFT, self.__r, calibrateLeft)
+        self.__wheelRight = Wheel(Direction.RIGHT, self.__r,  calibrateRight)
 
     def emergencyShutdown(self):
         try:
@@ -332,6 +446,9 @@ class MotionControl:
         self.velocity.angular = angular
         self.__wheelLeft.rideSpeed(self.velocity.forward - self.__d * self.velocity.angular)
         self.__wheelRight.rideSpeed(self.velocity.forward + self.__d * self.velocity.angular)
+
+    def calcForwardSpeedFromSpeed(self, speed):
+        return speed / self.__r
 
     def update(self):
         self.__wheelLeft.update()
@@ -377,13 +494,16 @@ class Sonar:
 
 class Robot:
     def __init__(self, leftCalibrate, rightCalibrate):
+        velocity = Velocity()
         i2c.init(freq=400_000)
         self.__senzors = Senzors()
         self.__sonar = Sonar(300)
-        self.__regulator = RegulatorP(50, 1_000)
-        self.motionControl = MotionControl(0.15, 0.067, leftCalibrate, rightCalibrate)
-        self.motionControl.newVelocity(1, 0)
-        self.counterUpdate = 0
+        self.__regulator = RegulatorP(15, 1_000)
+        self.__lightsControl = LightsControl(velocity)
+        self.motionControl = MotionControl(0.15, 0.067, velocity, leftCalibrate, rightCalibrate)
+        self.motionControl.newVelocity(0, 0)
+        self.__maxSpeed = self.motionControl.calcForwardSpeedFromSpeed(0.3)
+        self.__minSpeed = self.motionControl.getMinimumSpeed()
 
     def emergencyShutdown(self):
         self.motionControl.emergencyShutdown()
@@ -404,39 +524,39 @@ class Robot:
         else:
             sign = -1
         absSpeed = abs(speed)
-        maxSpeed = 10
-        minSpeed = self.motionControl.getMinimumSpeed()
-        if absSpeed > maxSpeed:
-            absSpeed = maxSpeed
-        elif absSpeed < minSpeed:
-            absSpeed = minSpeed
+        if absSpeed > self.__maxSpeed:
+            absSpeed = self.__maxSpeed
+        elif absSpeed < self.__minSpeed:
+            absSpeed = self.__minSpeed
         return sign * absSpeed
+
+    def acceptableDistance(self, regulatedDistance, distance):
+        distanceDif = abs(distance-regulatedDistance)
+        return distanceDif <= 0.03
 
     def regulateSpeed(self):
         time = ticks_ms()
         if self.__regulator.isTimeout(time):
-            self.counterUpdate += 1
+            regulatedDistance = 0.2
             distance = self.getObstacleDistance()
-            distanceDif = abs(distance-0.2)
-            if distanceDif < 0.01:      # prilis mala odchylka?
-                newSpeedForward = 0     # ano -> uz to nechame byt
-                newSpeedLimit = 0
-            else:                       # regulujeme rychlost podle rozdilu vzdalenosti od prekazky
-                newSpeedForward = self.__regulator.getOutput(time, -0.2, -distance)
-                newSpeedLimit = self.speedLimitation(newSpeedForward)
-            self.motionControl.newVelocity(newSpeedLimit, 0)
-#            print("Distance:", distance, distanceDif, "  SpeedControl:", newSpeedForward, "/", newSpeedLimit, "SpeedVheel:", self.motionControl.__wheelLeft.speed, "/", self.motionControl.__wheelLeft.getSpeed(UnitEnum.RadianPerSecond), "|", self.motionControl.__wheelRight.speed, "/", self.motionControl.__wheelRight.getSpeed(UnitEnum.RadianPerSecond))
+            if self.acceptableDistance(regulatedDistance, distance):
+                newSpeed = 0
+            else:
+                newSpeed = self.__regulator.getOutput(time, -regulatedDistance, -distance)
+                newSpeed = self.speedLimitation(newSpeed)
+            self.motionControl.newVelocity(newSpeed, 0)
 
     def update(self):
         self.motionControl.update()
         self.__senzors.update()
         self.__sonar.update()
+        self.__lightsControl.update()
         self.testBumber()
         self.regulateSpeed()
 
-def main():
-    leftCalibrate  = CalibrateFactors(3.0, 110, 75, 11.692, 28.643)
-    rightCalibrate = CalibrateFactors(3.0, 110, 75, 12.259, 30.332)
+if __name__ == "__main__":
+    leftCalibrate  = CalibrateFactors(2.8, 110, 75, 11.692, 28.643)
+    rightCalibrate = CalibrateFactors(2.8, 110, 75, 12.259, 30.332)
     robot = Robot(leftCalibrate, rightCalibrate)
     try:
         speed = 4
@@ -451,15 +571,11 @@ def main():
             diff = ticks_diff(time, lastPrint)
             if diff > 1_000:
                 lastPrint = time
-                speedL = robot.motionControl.__wheelLeft.getSpeed(UnitEnum.RadianPerSecond)
-                speedR = robot.motionControl.__wheelRight.getSpeed(UnitEnum.RadianPerSecond)
-#                print(speedL, speedR, robot.__sonar.lastDistance, robot.counterUpdate)
+                speedL = robot.motionControl.__wheelLeft.getSpeed(Unit.RadianPerSecond)
+                speedR = robot.motionControl.__wheelRight.getSpeed(Unit.RadianPerSecond)
+#                print("wheelLeft-speed", speedL, robot.motionControl.__wheelLeft.speed, robot.motionControl.__wheelLeft.__pwm)
             sleep(1)
         robot.motionControl.newVelocity(0, 0)
     except BaseException as e:
-        print("---------- Nastala nejaka chyba -> vsechno vypnout!")
         robot.emergencyShutdown()
         raise e
-
-if __name__ == "__main__":
-    main()
