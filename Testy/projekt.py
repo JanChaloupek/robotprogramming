@@ -59,6 +59,7 @@ class Senzors:
     LineTrackRight = 0x10
     LineTrackMiddle = 0x08
     LineTrackLeft = 0x04
+    LineTrackAll = 0x1C
 
     def __init__(self):
         self.__timeout_ms = 50
@@ -196,9 +197,9 @@ class LightsControl:
             self.__indState.reset()
         if self.__indState.isDiferent(backupState) or self.__lights.isTimeout():
             if self.__indState.value == IndicatorState.LIGHT:
-                if self.__direction == Direction.LEFT or self.warning:
+                if self.__indDirection == Direction.LEFT or self.warning:
                     self.__lights.setColorToLedList(self.ind_left, Lights.color_led_orange)
-                if self.__direction == Direction.RIGHT or self.warning:
+                if self.__indDirection == Direction.RIGHT or self.warning:
                     self.__lights.setColorToLedList(self.ind_right, Lights.color_led_orange)
             else:
                 self.__lights.setColorToLedList(self.ind_all, Lights.color_led_off)
@@ -496,6 +497,7 @@ class Robot:
     def __init__(self, leftCalibrate, rightCalibrate):
         velocity = Velocity()
         i2c.init(freq=400_000)
+        self.__oldTurn = 0
         self.__senzors = Senzors()
         self.__sonar = Sonar(300)
         self.__regulator = RegulatorP(15, 1_000)
@@ -504,6 +506,7 @@ class Robot:
         self.motionControl.newVelocity(0, 0)
         self.__maxSpeed = self.motionControl.calcForwardSpeedFromSpeed(0.3)
         self.__minSpeed = self.motionControl.getMinimumSpeed()
+        self.__turnCount = 0
 
     def emergencyShutdown(self):
         self.motionControl.emergencyShutdown()
@@ -534,7 +537,7 @@ class Robot:
         distanceDif = abs(distance-regulatedDistance)
         return distanceDif <= 0.03
 
-    def regulateSpeed(self):
+    def controlSpeed(self):
         time = ticks_ms()
         if self.__regulator.isTimeout(time):
             regulatedDistance = 0.2
@@ -546,13 +549,37 @@ class Robot:
                 newSpeed = self.speedLimitation(newSpeed)
             self.motionControl.newVelocity(newSpeed, 0)
 
+    def conditionChangeTurn(self, turn):
+        if self.__oldTurn != turn:
+            self.motionControl.newVelocity(4, turn)
+            self.__oldTurn = turn
+
+    def controlTurn(self):
+        time = ticks_ms()
+        if ticks(time, self.__controlTurnTime) > 50:
+            self.__controlTurnTime = time
+            if not self.__senzors.getSenzor(Senzors.LineTrackMiddle):
+                self.conditionChangeTurn(0)
+                self.__turnCount = 0
+            elif not self.__senzors.getSenzor(Senzors.LineTrackLeft):
+                self.conditionChangeTurn(100)
+                self.__turnCount = 0
+            elif not self.__senzors.getSenzor(Senzors.LineTrackRight):
+                self.conditionChangeTurn(-100)
+                self.__turnCount = 0
+            else:
+                self.__turnCount += 1
+                if self.__turnCount>100:
+                    self.motionControl.newVelocity(0, 0)
+
     def update(self):
         self.motionControl.update()
         self.__senzors.update()
         self.__sonar.update()
         self.__lightsControl.update()
         self.testBumber()
-        self.regulateSpeed()
+#        self.controlSpeed()
+        self.controlTurn()
 
 if __name__ == "__main__":
     leftCalibrate  = CalibrateFactors(2.8, 110, 75, 11.692, 28.643)
@@ -571,9 +598,8 @@ if __name__ == "__main__":
             diff = ticks_diff(time, lastPrint)
             if diff > 1_000:
                 lastPrint = time
-                speedL = robot.motionControl.__wheelLeft.getSpeed(Unit.RadianPerSecond)
-                speedR = robot.motionControl.__wheelRight.getSpeed(Unit.RadianPerSecond)
-#                print("wheelLeft-speed", speedL, robot.motionControl.__wheelLeft.speed, robot.motionControl.__wheelLeft.__pwm)
+#                senzors = robot.__senzors
+#                print(robot.__turnCount, not senzors.getSenzor(Senzors.LineTrackLeft),not senzors.getSenzor(Senzors.LineTrackMiddle),not senzors.getSenzor(Senzors.LineTrackRight))
             sleep(1)
         robot.motionControl.newVelocity(0, 0)
     except BaseException as e:
