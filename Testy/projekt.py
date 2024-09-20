@@ -1,6 +1,6 @@
 from neopixel import NeoPixel
 from microbit import i2c, pin0, pin8, pin12, pin14, pin15, button_a, button_b, sleep
-from utime import ticks_ms, ticks_us, ticks_diff
+from utime import ticks_ms, ticks_us, ticks_diff, ticks_add
 from machine import time_pulse_us
 
 MOTOR_I2C_ADDR = 0x70
@@ -11,25 +11,28 @@ class Direction:
     LEFT = 1
     RIGHT = 2
     FORWARD = 11
-    BACK =  12
+    BACK = 12
 
 class HeadLightEnum:
     OFF = 0
-    POTKAVACI = 1
-    DALKOVA = 2
+    DippedBeams = 1
+    HighBeams = 2
 
 class Unit:
+    # jednotky rychlosti
     TicksPerSecond = 1
     CirclePerSecond = 2
     RadianPerSecond = 3
     MeterPerSecond = 4
 
 class Velocity:
+    # třída pro uložení požadované rychlosti robota
     def __init__(self):
         self.forward = 0.0
         self.angular = 0.0
 
 class CalibrateFactors:
+    # třída pro uložení kalibračních hodnot pro motor
     def __init__(self, min_rychlost, min_pwm_rozjezd, min_pwm_dojezd, a, b):
         self.minSpeed = min_rychlost
         self.minPwmWhenStopped = min_pwm_rozjezd
@@ -38,34 +41,38 @@ class CalibrateFactors:
         self.b = b
 
 class RegulatorP:
+    # třída implementující P-regulátor
     def __init__(self, p, timeout_ms):
         self.__k = p
         self.__timeout_ms = timeout_ms
         self.__lastRegulationTime = ticks_ms()
 
     def isTimeout(self, time):
+        # vypršel čas pro další regulaci?
         diff = ticks_diff(time, self.__lastRegulationTime)
         return  diff >= self.__timeout_ms
 
     def getOutput(self, time, inputNominal, inputActual):
+        # vypočti akční zásah
         self.__lastRegulationTime = time
         error = inputNominal - inputActual
         changeValue = self.__k * error
         return changeValue
 
 class Senzors:
+    # třída vyčítající senzory po i2c a jejich získání dotazem
     ObstaleRight = 0x40
     ObstaleLeft = 0x20
     LineTrackRight = 0x10
     LineTrackMiddle = 0x08
     LineTrackLeft = 0x04
-    LineTrackAll = 0x1C
 
     def __init__(self):
         self.__timeout_ms = 50
         self.readData()
 
     def readData(self, time=0):
+        # přečti data po i2c
         self.__data = i2c.read(0x38, 1)[0]
         if time == 0:
             self.__lastTimeRead = ticks_ms()
@@ -73,9 +80,11 @@ class Senzors:
             self.__lastTimeRead = time
 
     def getSenzor(self, senzor):
+        # vrat stav jednoho senzoru z vyčtených dat
         return (self.__data & senzor) == 0
 
     def isTimeout(self, time):
+        # už je čas znovu vyčíst data senzoru?
         diff = ticks_diff(time, self.__lastTimeRead)
         return  diff >= self.__timeout_ms
 
@@ -91,20 +100,23 @@ class IndicatorState:
     def __init__(self):
         self.reset()
 
-    def reset(self):
-        self.set(self.NONE)
-
     def set(self, value):
         self.value = value
         self.start = ticks_ms()
 
-    def isDiferent(self, other):
+    def reset(self):
+        self.set(self.NONE)
+
+    def isDifferent(self, other):
+        # je hodnota stavu rozdílná od předané?
         return self.value != other
 
     def timeout(self):
+        # vypršel čas na změnu stavu blinkru?
         return ticks_diff(ticks_ms(), self.start) > 400
 
     def change(self):
+        # změn stav blinkru
         self.set(self.SPACE if self.value == self.LIGHT else self.LIGHT)
 
     def update(self):
@@ -115,6 +127,7 @@ class IndicatorState:
             self.set(self.LIGHT)
 
 class Lights:
+    # Třída implementující ledky jako světla robota (používá knihovnu NeoPixel)
     color_led_off = (0, 0, 0)
     color_led_orange = (100, 35, 0)
     color_led_white = (60, 60, 60)
@@ -127,20 +140,25 @@ class Lights:
         self.__writeTime = 0
 
     def setColor(self, ledNo, color):
+        # nastav barvu pro jednu led-ku
         self.__np[ledNo] = color
 
     def setColorToLedList(self, ledList, color):
+        # nastav barvu pro seznam led-ek
         for ledNo in ledList:
             self.setColor(ledNo, color)
 
     def isTimeout(self):
+        # vypršel čas na pravidelné zapsaní barev do ledek?
         return ticks_diff(ticks_ms(), self.__writeTime) > 100
 
     def write(self):
+        # zapiš nastavené barvy do led-ek
         self.__np.write()
         self.__writeTime = ticks_ms()
 
 class LightsControl:
+    # Třída implementující jednotlivá světla (blinkry, zpátečku, brzdy, potkávací a dálková světla)
     ind_all = (1, 2, 4, 7)
     ind_left = (1, 4)
     ind_right = (2, 7)
@@ -152,7 +170,7 @@ class LightsControl:
         self.__lights = Lights()
         self.__indState = IndicatorState()
         self.__velocity = velocity
-        self.setMain(HeadLightEnum.POTKAVACI)
+        self.setMain(HeadLightEnum.DippedBeams)
         self.setDirectionFromVelocity()
         self.setReverseFromVelocity()
         self.__isBrake = False
@@ -160,25 +178,30 @@ class LightsControl:
         self.warning = False
 
     def setMain(self, value):
+        # zapni typ hlavních světel (vypnuto, potkávací, dalková)
         self.__main = value
 
     def setDirectionFromVelocity(self):
-        if self.__velocity.angular > 0.0:
+        # spočti směr blikání z požadované úhlové rychlosti robota
+        if self.__velocity.angular > 10.0:
             self.__indDirection = Direction.LEFT
-        elif self.__velocity.angular < 0.0:
+        elif self.__velocity.angular < -10.0:
             self.__indDirection = Direction.RIGHT
         else:
             self.__indDirection = Direction.NONE
 
     def setReverseFromVelocity(self):
+        # spočti zapnutí couvacího světla z požadované dopředné rychlosti robota
         self.__isReverse = self.__velocity.forward < 0.0
 
     def setBrakeFromVelocity(self):
+        # spočti brzdové světlo z požadované dopředné rychlosti robota
         if False:
             self.__isBrake = True
             self.__brakeTime = ticks_ms()
 
     def isBrake(self):
+        # má svítit brzdové světlo?
         if self.__isBrake:
             diff = ticks_diff(ticks_ms(), self.__brakeTime)
             if diff < 1_000:
@@ -190,12 +213,13 @@ class LightsControl:
         self.setDirectionFromVelocity()
         self.setReverseFromVelocity()
         self.setBrakeFromVelocity()
+
         backupState = self.__indState.value
         if self.__indDirection != Direction.NONE or self.warning:
             self.__indState.update()
         else:
             self.__indState.reset()
-        if self.__indState.isDiferent(backupState) or self.__lights.isTimeout():
+        if self.__indState.isDifferent(backupState) or self.__lights.isTimeout():
             if self.__indState.value == IndicatorState.LIGHT:
                 if self.__indDirection == Direction.LEFT or self.warning:
                     self.__lights.setColorToLedList(self.ind_left, Lights.color_led_orange)
@@ -205,10 +229,10 @@ class LightsControl:
                 self.__lights.setColorToLedList(self.ind_all, Lights.color_led_off)
             headColor = Lights.color_led_off
             backColor = Lights.color_led_off
-            if self.__main == HeadLightEnum.POTKAVACI:
+            if self.__main == HeadLightEnum.DippedBeams:
                 headColor = Lights.color_led_white
                 backColor = Lights.color_led_red
-            if self.__main == HeadLightEnum.DALKOVA:
+            if self.__main == HeadLightEnum.HighBeams:
                 headColor = Lights.color_led_white_hi
                 backColor = Lights.color_led_red
             if self.isBrake():
@@ -220,17 +244,19 @@ class LightsControl:
             self.__lights.write()
 
 class SpeedTicks:
+    # Třída počítající rychlost z uložené historie tiků
     LIMIT = 50
     def __init__(self):
         self.__index = -1
         self.__times = [0] * self.LIMIT
-        self.__ticks = [0] * self.LIMIT
+        self.__ticks1 = [0] * self.LIMIT
+        self.__ticks0 = [0] * self.LIMIT
         self.__countValues = -1
         self.__lastTime = -1
         self.isStopped = True
 
-    # Zjisti z casu jestli uz muzeme ulozit data do dalsiho indexu
     def getNewIndex(self, time: int):
+        # Zjisti z casu jestli uz muzeme ulozit další data do historie
         newTime = int(time / 100_000)
         if newTime == self.__lastTime:
             return -1
@@ -238,22 +264,31 @@ class SpeedTicks:
             self.__lastTime = newTime
             return (self.__index + 1) % self.LIMIT
 
-    def nextValues(self, newIndex, time, ticks):
+    def isZeroChangeTicks(self, ticks0, ticks1):
+        diff0 = self.__ticks0[self.__index] - ticks0
+        diff1 = self.__ticks1[self.__index] - ticks1
+        return (diff0 == 0) and (diff1 == 0)
+
+    def nextValues(self, newIndex, time, ticks0, ticks1):
+        # Ulož další data do historie
         if self.__countValues < self.LIMIT:
             self.__countValues += 1
-            if self.__countValues > 2:
-                self.isStopped = (self.__ticks[self.__index]-ticks) == 0
+        if self.__countValues > 2:
+            self.isStopped = self.isZeroChangeTicks(ticks0, ticks1)
         self.__times[newIndex] = time
-        self.__ticks[newIndex] = ticks
+        self.__ticks0[newIndex] = ticks0
+        self.__ticks1[newIndex] = ticks1
         self.__index = newIndex
 
-    def update(self, ticks):
+    def update(self, ticks0, ticks1):
         time = ticks_us()
         newIndex = self.getNewIndex(time)
         if newIndex >= 0:
-            self.nextValues(newIndex, time, ticks)
+            self.nextValues(newIndex, time, ticks0, ticks1)
 
     def calculate(self, count=5, offset=0):
+        # Spočti rychlost v tikách za sekundu.
+        # Použij na to count dat z historie a použij ty, které jsou offset staré
         if count < 2:
             count = 10
         if count+offset >= self.__countValues:
@@ -265,13 +300,17 @@ class SpeedTicks:
         return  (speed0 + speed1) / 2
 
     def __calculate(self, count, offset):
+        # Skutečné spočtení (bez kontrol a průměrování)
         endIndex = (self.__index - offset) % self.LIMIT
         startIndex = (endIndex - count + 1) % self.LIMIT
         diffTimes = self.__times[endIndex] - self.__times[startIndex]
-        diffTicks = self.__ticks[endIndex] - self.__ticks[startIndex]
-        return 1_000_000 * diffTicks / diffTimes
+        diffTicks0 = self.__ticks0[endIndex] - self.__ticks0[startIndex]
+        diffTicks1 = self.__ticks1[endIndex] - self.__ticks1[startIndex]
+        return 1_000_000 * (1.32*diffTicks0 + 0.68*diffTicks1) / diffTimes
+#        return 1_000_000 * (diffTicks0 + diffTicks1) / diffTimes
 
 class Encoder:
+    # Třída počítající tiky enkoderu
     def __init__(self, place):
         if place == Direction.LEFT:
             self.__pin = pin14
@@ -279,33 +318,41 @@ class Encoder:
             self.__pin = pin15
         self.__speedTicks = SpeedTicks()
         self.__oldValue = self.readPin()
-        self.ticks = 0
+        self.ticks0 = 0
+        self.ticks1 = 0
         self.direction = Direction.FORWARD
 
     def isStopped(self):
+        # je detekované že (asi) stojíme?
         return self.__speedTicks.isStopped
 
     def readPin(self):
+        # přečti hodnotu pin-u z enkoderu
         return self.__pin.read_digital()
 
-    def nextTick(self):
+    def nextTick(self, value):
+        # vyreš další tik (přičtení/odečtení)
         if self.direction == Direction.FORWARD:
-            self.ticks += 1
-            return 0
+            if value == 0:
+                self.ticks0 += 1
+            else:
+                self.ticks1 += 1
         if self.direction == Direction.BACK:
-            self.ticks -= 1
-            return 0
-        return -1
+            if value == 0:
+                self.ticks0 -= 1
+            else:
+                self.ticks1 -= 1
 
     def update(self, direction):
         self.direction = direction
         newValue = self.readPin()
         if (newValue != self.__oldValue):
-            self.nextTick()
+            self.nextTick(newValue)
             self.__oldValue = newValue
-        self.__speedTicks.update(self.ticks)
+        self.__speedTicks.update(self.ticks0, self.ticks1)
 
     def getSpeed(self, unit, count=5, offset=0):
+        # dej mi rychlost v požadované jednotce rychlosti
         speed = self.__speedTicks.calculate(count, offset)
         if unit == Unit.TicksPerSecond:
             return speed
@@ -318,6 +365,7 @@ class Encoder:
         return 0
 
 class Wheel:
+    # Třída implementující motor
     def __init__(self, place, radius, calibrateFactors):
         self.__place = place
         self.__encoder = Encoder(place)
@@ -339,26 +387,32 @@ class Wheel:
         i2c.write(MOTOR_I2C_ADDR, bytes([0xE8, 0xAA]))
 
     def emergencyShutdown(self):
+        # bezpečnostní odstavení motorů
         self.speed = 0.0
         self.writePWM(self.__pwmNoBack, self.__pwmNoForw, 0)
 
     def isStopped(self):
+        # je detekováno, že (asi) stojíme?
         return self.__encoder.isStopped()
 
     def getMinimumSpeed(self):
+        # dej mi minimální dopřednou rychlost robota z kalibrace kol
         return self.__calibrateFactors.minSpeed
 
     def writePWM(self, offPwmNo, onPwmNo, pwm):
+        # zapiš pwm přes i2c
         i2c.write(MOTOR_I2C_ADDR, bytes([offPwmNo, 0]))
         i2c.write(MOTOR_I2C_ADDR, bytes([onPwmNo, pwm]))
         self.__pwm = pwm
 
     def getPwmFromSpeed(self, speed):
+        # spočti první hodnotu pwm z dopředné rychlosti kola
         if speed==0.0:
             return 0
         return self.__calibrateFactors.a * speed + self.__calibrateFactors.b
 
     def rideSpeed(self, speed):
+        # jeď touto dopřednou rychlostí kola
         self.speed = speed
         if self.speed >= 0:
             self.direction = Direction.FORWARD
@@ -368,6 +422,7 @@ class Wheel:
         self.__ridePwm(pwm)
 
     def checkMinimumPwm(self, pwm):
+        # zkontroluj minimální hodnotu pwm (podle toho jestli stojíme nebo jedeme)
         if self.speed != 0.0:
             if (self.isStopped()):
                 minPwm = self.__calibrateFactors.minPwmWhenStopped
@@ -378,22 +433,20 @@ class Wheel:
         return pwm
 
     def __ridePwm(self, pwm):
-        origPwm = pwm
-        pwm = int(pwm)
-        pwm = self.checkMinimumPwm(pwm)
+        # použij tuto hodnotu pwm
+        pwm = self.checkMinimumPwm(int(pwm))
         if pwm < 0:
             return
         if pwm > 255:
             return
         if self.__pwmNoForw>0 and self.__pwmNoBack>0:
             if self.direction == Direction.FORWARD:
-                return self.writePWM(self.__pwmNoBack, self.__pwmNoForw, pwm)
+                self.writePWM(self.__pwmNoBack, self.__pwmNoForw, pwm)
             if self.direction == Direction.BACK:
-                return self.writePWM(self.__pwmNoForw, self.__pwmNoBack, pwm)
-            return
-        return
+                self.writePWM(self.__pwmNoForw, self.__pwmNoBack, pwm)
 
     def __changePwm(self, changeValue):
+        # změn pwm o tuto hodnotu
         newPwm = 0
         if self.direction == Direction.FORWARD:
             newPwm = self.__pwm + changeValue
@@ -406,11 +459,13 @@ class Wheel:
         return self.__ridePwm(newPwm)
 
     def getSpeed(self, unit, count=5, offset=0):
+        # dej mi zmerenou rychlost kola v teto jednotce
         if unit == Unit.MeterPerSecond:
             return self.radius * self.__encoder.getSpeed(Unit.RadianPerSecond, count, offset)
         return self.__encoder.getSpeed(unit, count, offset)
 
     def regulate(self):
+        # reguluj pwm podle zmerene rychlosti kola
         time = ticks_ms()
         if self.__regulator.isTimeout(time):
             measureSpeed = self.__encoder.getSpeed(Unit.RadianPerSecond)
@@ -422,6 +477,7 @@ class Wheel:
         self.regulate()
 
 class MotionControl:
+    # Třída implementující kinematiku robota
     def __init__(self, wheelbase, wheelDiameter, velocity, calibrateLeft, calibrateRight):
         self.__d = wheelbase / 2
         self.__r = wheelDiameter / 2
@@ -430,6 +486,7 @@ class MotionControl:
         self.__wheelRight = Wheel(Direction.RIGHT, self.__r,  calibrateRight)
 
     def emergencyShutdown(self):
+        # bezpečnostní odstavení motorů robota
         try:
             self.newVelocity(0, 0)
         except BaseException as e:
@@ -438,17 +495,20 @@ class MotionControl:
             raise e
 
     def getMinimumSpeed(self):
+        # dej mi minimální rychlost robota z kalibtačních hodnot
         minimumLeft = self.__wheelLeft.getMinimumSpeed()
         minimumRight = self.__wheelRight.getMinimumSpeed()
         return max(minimumLeft, minimumRight)
 
     def newVelocity(self, forward, angular):
+        # nastav nové pořadované rychlosti pohybu robota a přepočti je podle kinematiky do jednotlivých motorů
         self.velocity.forward = forward
         self.velocity.angular = angular
         self.__wheelLeft.rideSpeed(self.velocity.forward - self.__d * self.velocity.angular)
         self.__wheelRight.rideSpeed(self.velocity.forward + self.__d * self.velocity.angular)
 
     def calcForwardSpeedFromSpeed(self, speed):
+        # spočti dopřednou rychlost v rad/s z rychlosti m/s
         return speed / self.__r
 
     def update(self):
@@ -456,6 +516,7 @@ class MotionControl:
         self.__wheelRight.update()
 
 class Sonar:
+    # Třída implementující měření vzdálenosti k překážce
     MAX_DISTANCE = 10
 
     def __init__(self, timeoutMeasure):
@@ -469,6 +530,7 @@ class Sonar:
         self.lastDistance = -1
 
     def calculateDistance(self, time):
+        # změř a vrať vzdálenost k překážce
         self.__lastMeasureTime = time
         speed = 340    # m/s
         self.__trigger.write_digital(1)
@@ -481,6 +543,7 @@ class Sonar:
         return distance
 
     def isTimeout(self, time):
+        # už je čas znovu změřit vzdálenost?
         diff = ticks_diff(time, self.__lastMeasureTime)
         return  diff >= self.__timeout_ms
 
@@ -494,6 +557,7 @@ class Sonar:
                 self.lastDistance = self.MAX_DISTANCE
 
 class Robot:
+    # Základní třída s robotem
     def __init__(self, leftCalibrate, rightCalibrate):
         velocity = Velocity()
         i2c.init(freq=400_000)
@@ -509,19 +573,24 @@ class Robot:
         self.__turnCount = 0
 
     def emergencyShutdown(self):
+        # bezpečnostní zastavení robota (něco špatného se stalo)
         self.motionControl.emergencyShutdown()
 
     def supplyVoltage(self):
+        # vrať velikost napájecího napětí
         return 0.00898 * pin2.read_analog()
 
     def getObstacleDistance(self):
+        # vrať poslední známou vzdálenost od překážky
         return self.__sonar.lastDistance
 
     def testBumber(self):
+        # pokud jsme narazili tak zastav
         if self.__senzors.getSenzor(Senzors.ObstaleLeft) or self.__senzors.getSenzor(Senzors.ObstaleRight):
             self.motionControl.newVelocity(0, 0)
 
     def speedLimitation(self, speed):
+        # omezení maximální a minimální dopředné rychlosti
         if speed >= 0:
             sign = 1
         else:
@@ -534,10 +603,12 @@ class Robot:
         return sign * absSpeed
 
     def acceptableDistance(self, regulatedDistance, distance):
+        # jsme v přijatelné vzdálenosti od překážky?
         distanceDif = abs(distance-regulatedDistance)
         return distanceDif <= 0.03
 
     def controlSpeed(self):
+        # reguluj dopředou rychlost podle vzdálenosti od překážky
         time = ticks_ms()
         if self.__regulator.isTimeout(time):
             regulatedDistance = 0.2
@@ -546,17 +617,19 @@ class Robot:
                 newSpeed = 0
             else:
                 newSpeed = self.__regulator.getOutput(time, -regulatedDistance, -distance)
-                newSpeed = self.speedLimitation(newSpeed)
+                newSpeed = self.speedLimitationspeedLimitation(newSpeed)
             self.motionControl.newVelocity(newSpeed, 0)
 
     def conditionChangeTurn(self, turn):
+        # pokud se požadovaná úhlová rychlost změnila, požádáme ovladač motorů o změnu rychlosti
         if self.__oldTurn != turn:
             self.motionControl.newVelocity(4, turn)
             self.__oldTurn = turn
 
     def controlTurn(self):
+        # reguluj zatáčení podle sledovače čáry
         time = ticks_ms()
-        if ticks(time, self.__controlTurnTime) > 50:
+        if ticks_diff(time, self.__controlTurnTime) > 50:
             self.__controlTurnTime = time
             if not self.__senzors.getSenzor(Senzors.LineTrackMiddle):
                 self.conditionChangeTurn(0)
@@ -579,27 +652,23 @@ class Robot:
         self.__lightsControl.update()
         self.testBumber()
 #        self.controlSpeed()
-        self.controlTurn()
+#        self.controlTurn()
 
 if __name__ == "__main__":
     leftCalibrate  = CalibrateFactors(2.8, 110, 75, 11.692, 28.643)
     rightCalibrate = CalibrateFactors(2.8, 110, 75, 12.259, 30.332)
     robot = Robot(leftCalibrate, rightCalibrate)
     try:
-        speed = 4
+        speed = 2.0
         robot.motionControl.newVelocity(speed, 0)
-        lastPrint = 0
+        lastPrint = ticks_ms()
         while not button_a.was_pressed():
-            if button_b.was_pressed():
-                speed *= -1
-                robot.motionControl.newVelocity(speed, 0)
             robot.update()
             time = ticks_ms()
-            diff = ticks_diff(time, lastPrint)
-            if diff > 1_000:
+            if ticks_diff(time, lastPrint) > 1_000:
+                wheel = robot.motionControl.__wheelLeft
+                print(wheel.getSpeed(Unit.RadianPerSecond), wheel.__pwm)
                 lastPrint = time
-#                senzors = robot.__senzors
-#                print(robot.__turnCount, not senzors.getSenzor(Senzors.LineTrackLeft),not senzors.getSenzor(Senzors.LineTrackMiddle),not senzors.getSenzor(Senzors.LineTrackRight))
             sleep(1)
         robot.motionControl.newVelocity(0, 0)
     except BaseException as e:
