@@ -1,5 +1,5 @@
 from neopixel import NeoPixel
-from microbit import i2c, pin0, pin8, pin12, pin14, pin15, button_a, button_b, sleep
+from microbit import i2c, pin0, pin8, pin12, pin14, pin15, button_a, button_b, sleep, display
 from utime import ticks_ms, ticks_us, ticks_diff, ticks_add
 from machine import time_pulse_us
 
@@ -60,7 +60,7 @@ class RegulatorP:
         return changeValue
 
 class Senzors:
-    # třída vyčítající senzory po i2c a jejich získání dotazem
+    # třída pravidelne vyčítající senzory po i2c a poskytujici jejich stavu dotazem na konkretni z nich
     ObstaleRight = 0x40
     ObstaleLeft = 0x20
     LineTrackRight = 0x10
@@ -464,17 +464,17 @@ class Wheel:
             return self.radius * self.__encoder.getSpeed(Unit.RadianPerSecond, count, offset)
         return self.__encoder.getSpeed(unit, count, offset)
 
-    def regulate(self):
+    def regulatePwm(self):
         # reguluj pwm podle zmerene rychlosti kola
         time = ticks_ms()
         if self.__regulator.isTimeout(time):
             measureSpeed = self.__encoder.getSpeed(Unit.RadianPerSecond)
-            changeValue = self.__regulator.getOutput(time, self.speed, measureSpeed)
-            self.__changePwm(changeValue)
+            changePwm = self.__regulator.getOutput(time, self.speed, measureSpeed)
+            self.__changePwm(changePwm)
 
     def update(self):
         self.__encoder.update(self.direction)
-        self.regulate()
+        self.regulatePwm()
 
 class MotionControl:
     # Třída implementující kinematiku robota
@@ -571,6 +571,8 @@ class Robot:
         self.__maxSpeed = self.motionControl.calcForwardSpeedFromSpeed(0.3)
         self.__minSpeed = self.motionControl.getMinimumSpeed()
         self.__turnCount = 0
+        self.__controlTurnTime = ticks_ms()
+        self.displayText("X")
 
     def emergencyShutdown(self):
         # bezpečnostní zastavení robota (něco špatného se stalo)
@@ -579,6 +581,9 @@ class Robot:
     def supplyVoltage(self):
         # vrať velikost napájecího napětí
         return 0.00898 * pin2.read_analog()
+
+    def displayText(self, text):
+        display.show(text, delay=0, wait=False)
 
     def getObstacleDistance(self):
         # vrať poslední známou vzdálenost od překážky
@@ -617,14 +622,15 @@ class Robot:
                 newSpeed = 0
             else:
                 newSpeed = self.__regulator.getOutput(time, -regulatedDistance, -distance)
-                newSpeed = self.speedLimitationspeedLimitation(newSpeed)
+                newSpeed = self.speedLimitation(newSpeed)
             self.motionControl.newVelocity(newSpeed, 0)
 
-    def conditionChangeTurn(self, turn):
+    def conditionChangeTurn(self, turn, char):
         # pokud se požadovaná úhlová rychlost změnila, požádáme ovladač motorů o změnu rychlosti
         if self.__oldTurn != turn:
             self.motionControl.newVelocity(4, turn)
             self.__oldTurn = turn
+            self.displayText(char)
 
     def controlTurn(self):
         # reguluj zatáčení podle sledovače čáry
@@ -632,18 +638,19 @@ class Robot:
         if ticks_diff(time, self.__controlTurnTime) > 50:
             self.__controlTurnTime = time
             if not self.__senzors.getSenzor(Senzors.LineTrackMiddle):
-                self.conditionChangeTurn(0)
+                self.conditionChangeTurn(0, "A")
                 self.__turnCount = 0
             elif not self.__senzors.getSenzor(Senzors.LineTrackLeft):
-                self.conditionChangeTurn(100)
+                self.conditionChangeTurn(100, "L")
                 self.__turnCount = 0
             elif not self.__senzors.getSenzor(Senzors.LineTrackRight):
-                self.conditionChangeTurn(-100)
+                self.conditionChangeTurn(-100, "R")
                 self.__turnCount = 0
             else:
                 self.__turnCount += 1
                 if self.__turnCount>100:
                     self.motionControl.newVelocity(0, 0)
+                    self.displayText("0")
 
     def update(self):
         self.motionControl.update()
@@ -652,22 +659,20 @@ class Robot:
         self.__lightsControl.update()
         self.testBumber()
 #        self.controlSpeed()
-#        self.controlTurn()
+        self.controlTurn()
 
 if __name__ == "__main__":
     leftCalibrate  = CalibrateFactors(2.8, 110, 75, 11.692, 28.643)
     rightCalibrate = CalibrateFactors(2.8, 110, 75, 12.259, 30.332)
     robot = Robot(leftCalibrate, rightCalibrate)
     try:
-        speed = 2.0
+        speed = 4
         robot.motionControl.newVelocity(speed, 0)
         lastPrint = ticks_ms()
         while not button_a.was_pressed():
             robot.update()
             time = ticks_ms()
             if ticks_diff(time, lastPrint) > 1_000:
-                wheel = robot.motionControl.__wheelLeft
-                print(wheel.getSpeed(Unit.RadianPerSecond), wheel.__pwm)
                 lastPrint = time
             sleep(1)
         robot.motionControl.newVelocity(0, 0)

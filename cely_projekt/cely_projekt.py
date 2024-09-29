@@ -43,13 +43,13 @@ class Senzory:
 
         if not self.nova_verze:
             senzoricka_data[Konstanty.LV_ENKODER] = bitove_pole[9]
-            senzoricka_data[Konstanty.PR_ENKODER] = bitove_pole[8]
+            senzoricka_data[Konstanty.PR_ENKODER] = bitove_pole[8] #TODO pretipuj taky, ale otestuj!
 
-        senzoricka_data[Konstanty.LV_S_CARY] = bitove_pole[7]
-        senzoricka_data[Konstanty.PROS_S_CARY] = bitove_pole[6]
-        senzoricka_data[Konstanty.PR_S_CARY] = bitove_pole[5]
-        senzoricka_data[Konstanty.LV_IR] = bitove_pole[4]
-        senzoricka_data[Konstanty.PR_IR] = bitove_pole[3]
+        senzoricka_data[Konstanty.LV_S_CARY] = bool(int(bitove_pole[7]))
+        senzoricka_data[Konstanty.PROS_S_CARY] = bool(int(bitove_pole[6]))
+        senzoricka_data[Konstanty.PR_S_CARY] = bool(int(bitove_pole[5]))
+        senzoricka_data[Konstanty.LV_IR] = bool(bool(bitove_pole[4]))
+        senzoricka_data[Konstanty.PR_IR] = bool(bool(bitove_pole[3]))
 
         return senzoricka_data
 
@@ -162,6 +162,7 @@ class Motor:
         self.__min_pwm = 0
         self.__perioda_regulace = 1000000 #v microsekundach
         self.__cas_posledni_regulace = 0
+        self.aktualni_rychlost = 0
 
     def inicializuj(self):
         # self.enkoder.inicializuj()
@@ -280,13 +281,13 @@ class Motor:
 
         P = 6
 
-        aktualni_rychlost = self.__enkoder.vypocti_rychlost()
+        self.aktualni_rychlost = self.__enkoder.vypocti_rychlost()
         # aktualni_rychlost bude vzdy pozitivni
         # musim tedy kombinovat se smerem, kterym se pohybuji
         if self.__pozadovana_uhlova_r_kola < 0:
-            aktualni_rychlost *= -1
+            self.aktualni_rychlost *= -1
 
-        error = self.__pozadovana_uhlova_r_kola - aktualni_rychlost
+        error = self.__pozadovana_uhlova_r_kola - self.aktualni_rychlost
         akcni_zasah = P*error
         return self.__zmen_PWM_o(akcni_zasah)
 
@@ -336,6 +337,8 @@ class Robot:
         self.__levy_motor = Motor(Konstanty.LEVY, self.__prumer_kola, nova_verze)
         self.__pravy_motor = Motor(Konstanty.PRAVY, self.__prumer_kola, nova_verze)
         self.__inicializovano = False
+        self.__cas_minule_reg = ticks_us()
+        self.__perioda_regulace = 1000000
 
     def inicializuj(self):
         i2c.init(400000)
@@ -349,6 +352,9 @@ class Robot:
 
         if not self.__inicializovano:
             return -1
+
+        self.__dopredna_rychlost = dopredna_rychlost
+        self.__uhlova_rychlost = uhlova_rychlost
         # kinematika diferencionalniho podvozku - lekce 7
         dopr_rychlost_leve = dopredna_rychlost - self.__d * uhlova_rychlost
         dopr_rychlost_prave = dopredna_rychlost + self.__d * uhlova_rychlost
@@ -359,3 +365,34 @@ class Robot:
         self.__pravy_motor.jed_doprednou_rychlosti(dopr_rychlost_prave)
 
         return 0
+
+    def __aktualni_rychlost(self):
+        levy_r = self.__levy_motor.aktualni_rychlost * self.__prumer_kola/2
+        pravy_r = self.__pravy_motor.aktualni_rychlost * self.__prumer_kola/2
+
+
+        omega = (pravy_r - levy_r)/ (2 * self.__d)
+        v = levy_r + self.__d * omega
+        print("aktualizuju", levy_r, pravy_r, v, omega)
+        return v, omega
+
+    def aktualizuj_se(self):
+        self.__levy_motor.aktualizuj_se()
+        self.__pravy_motor.aktualizuj_se()
+
+        if ticks_diff(ticks_us(), self.__cas_minule_reg) > self.__perioda_regulace:
+            self.__cas_minule_reg = ticks_us()
+            #self.__reguluj()
+
+    def __reguluj(self):
+
+        v, omega = self.__aktualni_rychlost()
+        error_omega = self.__uhlova_rychlost - omega
+        error_v = self.__dopredna_rychlost - v
+
+        P_om = 1
+        P_v = 1
+        u_om = P_om * error_omega
+        u_v = P_v * error_v
+        print("reguluju", u_v, u_om)
+        self.jed(u_v, u_om)
