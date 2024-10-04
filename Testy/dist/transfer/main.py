@@ -7,29 +7,37 @@ from machine import time_pulse_us
 MOTOR_I2C_ADDR=112
 TICKS_PER_CIRCLE=40
 TwoPI=6.283184
-class Direction:NONE=0;LEFT=1;RIGHT=2;RIGHT=2;FORWARD=11;BACK=12
-class HeadLightEnum:OFF=0;DippedBeams=1;HighBeams=2
-class Unit:TicksPerSecond=1;CirclePerSecond=2;RadianPerSecond=3;MeterPerSecond=4
+class Constants:NONE=0;LEFT=1;RIGHT=2;FORWARD=11;BACK=12;DippedBeams=31;HighBeams=32;TicksPerSecond=41;CirclePerSecond=42;RadianPerSecond=43;MeterPerSecond=44;Line=51;Crossroads=52
 class Velocity:
 	def __init__(A):A.forward=_A;A.angular=_A
 class CalibrateFactors:
-	def __init__(A,min_rychlost,min_pwm_rozjezd,min_pwm_dojezd,a,b):A.minSpeed=min_rychlost;A.minPwmWhenStopped=min_pwm_rozjezd;A.minPwmInMotion=min_pwm_dojezd;A.a=a;A.b=b
+	def __init__(A,minSpeed,minPwmWhenStopped,minPwmInMotion,a,b):A.minSpeed=minSpeed;A.minPwmWhenStopped=minPwmWhenStopped;A.minPwmInMotion=minPwmInMotion;A.a=a;A.b=b
 class RegulatorP:
 	def __init__(A,p,timeout_ms):A.__k=p;A.__timeout_ms=timeout_ms;A.__lastRegulationTime=ticks_ms()
 	def isTimeout(A,time):B=ticks_diff(time,A.__lastRegulationTime);return B>=A.__timeout_ms
 	def getActionIntervention(A,time,inputNominal,inputActual):A.__lastRegulationTime=time;B=inputNominal-inputActual;C=A.__k*B;return C
 class Senzors:
 	ObstaleRight=64;ObstaleLeft=32;LineTrackRight=16;LineTrackMiddle=8;LineTrackLeft=4
-	def __init__(A):A.__timeout_ms=33;A.readData()
+	def __init__(A):A.__timeout_ms=33;A.__countNotLine=0;A.readData()
 	def readData(A,time=0):
 		A.__data=i2c.read(56,1)[0]
 		if time==0:A.__lastTimeRead=ticks_ms()
 		else:A.__lastTimeRead=time
-	def getSenzor(A,senzor):return A.__data&senzor==0
+	def getData(A,mask):return A.__data&mask
+	def getSenzor(A,senzor):return A.getData(senzor)==0
 	def isTimeout(A,time):B=ticks_diff(time,A.__lastTimeRead);return B>=A.__timeout_ms
 	def update(A):
 		B=ticks_ms()
 		if A.isTimeout(B):A.readData(B)
+	def getSituationLine(A):
+		B=0
+		if A.getSenzor(Senzors.LineTrackLeft):B+=1
+		if A.getSenzor(Senzors.LineTrackMiddle):B+=1
+		if A.getSenzor(Senzors.LineTrackRight):B+=1
+		print(B,A.__countNotLine)
+		if B>=2:A.__countNotLine=0;return Constants.Crossroads
+		if B==1:A.__countNotLine=0;return Constants.Line
+		A.__countNotLine+=1;return Constants.NONE
 class IndicatorState:
 	NONE=0;SPACE=1;LIGHT=2
 	def __init__(A):A.reset()
@@ -52,13 +60,13 @@ class Lights:
 	def write(A):A.__np.write();A.__writeTime=ticks_ms()
 class LightsControl:
 	ind_all=1,2,4,7;ind_left=1,4;ind_right=2,7;head_lights=0,3;back_lights=5,6;inside_light=0,3,5,6;reverse_lights=5,
-	def __init__(A,velocity):A.__lights=Lights();A.__indState=IndicatorState();A.__velocity=velocity;A.setMain(HeadLightEnum.DippedBeams);A.setDirectionFromVelocity();A.setReverseFromVelocity();A.__isBrake=_B;A.__brakeTime=0;A.warning=_B
+	def __init__(A,velocity):A.__lights=Lights();A.__indState=IndicatorState();A.__velocity=velocity;A.setMain(Constants.DippedBeams);A.__isBrake=_B;A.__brakeTime=0;A.warning=_B
 	def setMain(A,value):A.__main=value
-	def setDirectionFromVelocity(A):
-		if A.__velocity.angular>=.1:A.__indDirection=Direction.LEFT
-		elif A.__velocity.angular<=-.1:A.__indDirection=Direction.RIGHT
-		else:A.__indDirection=Direction.NONE
-	def setReverseFromVelocity(A):A.__isReverse=A.__velocity.forward<_A
+	def __getIndDirection(A):
+		if A.__velocity.angular>=.1:return Constants.LEFT
+		if A.__velocity.angular<=-.1:return Constants.RIGHT
+		return Constants.NONE
+	def __isReverse(A):return A.__velocity.forward<_A
 	def setBrakeFromVelocity(A):
 		if _B:A.__isBrake=True;A.__brakeTime=ticks_ms()
 	def isBrake(A):
@@ -68,23 +76,23 @@ class LightsControl:
 			A.__isBrake=_B
 		return _B
 	def update(A):
-		A.setDirectionFromVelocity();A.setReverseFromVelocity();A.setBrakeFromVelocity();D=A.__indState.value
-		if A.__indDirection!=Direction.NONE or A.warning:A.__indState.update()
+		A.setBrakeFromVelocity();D=A.__indState.value
+		if A.__getIndDirection()!=Constants.NONE or A.warning:A.__indState.update()
 		else:A.__indState.reset()
 		if A.__indState.isDifferent(D)or A.__lights.isTimeout():
 			if A.__indState.value==IndicatorState.LIGHT:
-				if A.__indDirection==Direction.LEFT or A.warning:A.__lights.setColorToLedList(A.ind_left,Lights.color_led_orange)
-				if A.__indDirection==Direction.RIGHT or A.warning:A.__lights.setColorToLedList(A.ind_right,Lights.color_led_orange)
+				if A.__getIndDirection()==Constants.LEFT or A.warning:A.__lights.setColorToLedList(A.ind_left,Lights.color_led_orange)
+				if A.__getIndDirection()==Constants.RIGHT or A.warning:A.__lights.setColorToLedList(A.ind_right,Lights.color_led_orange)
 			else:A.__lights.setColorToLedList(A.ind_all,Lights.color_led_off)
 			C=Lights.color_led_off;B=Lights.color_led_off
-			if A.__main==HeadLightEnum.DippedBeams:C=Lights.color_led_white;B=Lights.color_led_red
-			if A.__main==HeadLightEnum.HighBeams:C=Lights.color_led_white_hi;B=Lights.color_led_red
+			if A.__main==Constants.DippedBeams:C=Lights.color_led_white;B=Lights.color_led_red
+			if A.__main==Constants.HighBeams:C=Lights.color_led_white_hi;B=Lights.color_led_red
 			if A.isBrake():B=Lights.color_led_red_br
 			A.__lights.setColorToLedList(A.head_lights,C);A.__lights.setColorToLedList(A.back_lights,B)
-			if A.__isReverse:A.__lights.setColorToLedList(A.reverse_lights,Lights.color_led_white)
+			if A.__isReverse():A.__lights.setColorToLedList(A.reverse_lights,Lights.color_led_white)
 			A.__lights.write()
 class SpeedTicks:
-	LIMIT=30
+	LIMIT=20
 	def __init__(A):A.__index=-1;A.__times=[0]*A.LIMIT;A.__ticks=[0]*A.LIMIT;A.__countValues=-1;A.__lastTime=-1;A.isStopped=True
 	def getNewIndex(A,time):
 		B=int(time/100000)
@@ -108,33 +116,33 @@ class SpeedTicks:
 	def __calculate(A,count,offset):B=(A.__index-offset)%A.LIMIT;C=(B-count+1)%A.LIMIT;D=A.__times[B]-A.__times[C];E=A.__ticks[B]-A.__ticks[C];return 1000000*E/D
 class Encoder:
 	def __init__(A,place,ticksCount,radius):
-		if place==Direction.LEFT:A.__pin=pin14
+		if place==Constants.LEFT:A.__pin=pin14
 		else:A.__pin=pin15
-		A.__ticksCount=ticksCount;A.__radius=radius;A.__speedTicks=SpeedTicks();A.__oldValue=A.readPin();A.ticks=0;A.direction=Direction.FORWARD
+		A.__ticksCount=ticksCount;A.__radius=radius;A.__speedTicks=SpeedTicks();A.__oldValue=A.readPin();A.ticks=0;A.direction=Constants.FORWARD
 	def isStopped(A):return A.__speedTicks.isStopped
 	def readPin(A):return A.__pin.read_digital()
 	def nextTick(A,value):
-		if A.direction==Direction.FORWARD:A.ticks+=1
-		if A.direction==Direction.BACK:A.ticks-=1
+		if A.direction==Constants.FORWARD:A.ticks+=1
+		if A.direction==Constants.BACK:A.ticks-=1
 	def update(A,direction):
 		A.direction=direction;B=A.readPin()
 		if B!=A.__oldValue:A.nextTick(B);A.__oldValue=B
 		A.__speedTicks.update(A.ticks)
 	def getSpeed(C,unit,count=2,offset=0):
 		B=unit;A=C.__speedTicks.calculate(count,offset)
-		if B==Unit.TicksPerSecond:return A
+		if B==Constants.TicksPerSecond:return A
 		A/=C.__ticksCount
-		if B==Unit.CirclePerSecond:return A
+		if B==Constants.CirclePerSecond:return A
 		A*=TwoPI
-		if B==Unit.RadianPerSecond:return A
+		if B==Constants.RadianPerSecond:return A
 		A*=C.__radius
-		if B==Unit.MeterPerSecond:return A
+		if B==Constants.MeterPerSecond:return A
 		return 0
 class Wheel:
 	def __init__(A,place,radius,calibrateFactors):
-		C=radius;B=place;A.__place=B;A.__encoder=Encoder(B,TICKS_PER_CIRCLE,C);A.__regulator=RegulatorP(6,125);A.__calibrateFactors=calibrateFactors;A.radius=C;A.speed=_A;A.direction=Direction.FORWARD;A.__pwmNoBack=0;A.__pwmNoForw=0
-		if B==Direction.RIGHT:A.__pwmNoBack=2;A.__pwmNoForw=3
-		elif B==Direction.LEFT:A.__pwmNoBack=4;A.__pwmNoForw=5
+		C=radius;B=place;A.__place=B;A.__encoder=Encoder(B,TICKS_PER_CIRCLE,C);A.__regulator=RegulatorP(6,125);A.__calibrateFactors=calibrateFactors;A.radius=C;A.speed=_A;A.direction=Constants.FORWARD;A.__pwmNoBack=0;A.__pwmNoForw=0
+		if B==Constants.RIGHT:A.__pwmNoBack=2;A.__pwmNoForw=3
+		elif B==Constants.LEFT:A.__pwmNoBack=4;A.__pwmNoForw=5
 		i2c.write(MOTOR_I2C_ADDR,bytes([0,1]));i2c.write(MOTOR_I2C_ADDR,bytes([232,170]))
 	def emergencyShutdown(A):A.speed=_A;A.writePWM(A.__pwmNoBack,A.__pwmNoForw,0)
 	def isStopped(A):return A.__encoder.isStopped()
@@ -147,8 +155,8 @@ class Wheel:
 	def calcAngularSpeedFromForwardSpeed(A,v):return v/A.radius
 	def rideSpeed(A,v):
 		A.speed=A.calcAngularSpeedFromForwardSpeed(v)
-		if A.speed>=0:A.direction=Direction.FORWARD
-		else:A.direction=Direction.BACK
+		if A.speed>=0:A.direction=Constants.FORWARD
+		else:A.direction=Constants.BACK
 		B=A.getPwmFromSpeed(abs(A.speed));A.__ridePwm(B)
 	def checkMinimumPwm(A,pwm):
 		B=pwm
@@ -162,22 +170,22 @@ class Wheel:
 		if B<0:return
 		if B>255:return
 		if A.__pwmNoForw>0 and A.__pwmNoBack>0:
-			if A.direction==Direction.FORWARD:A.writePWM(A.__pwmNoBack,A.__pwmNoForw,B)
-			if A.direction==Direction.BACK:A.writePWM(A.__pwmNoForw,A.__pwmNoBack,B)
+			if A.direction==Constants.FORWARD:A.writePWM(A.__pwmNoBack,A.__pwmNoForw,B)
+			if A.direction==Constants.BACK:A.writePWM(A.__pwmNoForw,A.__pwmNoBack,B)
 	def __changePwm(B,changeValue):
 		C=changeValue;A=0
-		if B.direction==Direction.FORWARD:A=B.__pwm+C
-		if B.direction==Direction.BACK:A=B.__pwm-C
+		if B.direction==Constants.FORWARD:A=B.__pwm+C
+		if B.direction==Constants.BACK:A=B.__pwm-C
 		if A>255:A=255
 		if A<0:A=0
 		return B.__ridePwm(A)
 	def getSpeed(A,unit,count=5,offset=0):return A.__encoder.getSpeed(unit,count,offset)
 	def regulatePwm(A):
 		B=ticks_ms()
-		if A.__regulator.isTimeout(B):C=A.__encoder.getSpeed(Unit.RadianPerSecond);D=A.__regulator.getActionIntervention(B,A.speed,C);A.__changePwm(D)
+		if A.__regulator.isTimeout(B):C=A.__encoder.getSpeed(Constants.RadianPerSecond);D=A.__regulator.getActionIntervention(B,A.speed,C);A.__changePwm(D)
 	def update(A):A.__encoder.update(A.direction);A.regulatePwm()
 class MotionControl:
-	def __init__(A,wheelbase,wheelDiameter,velocity,calibrateLeft,calibrateRight):A.__d=wheelbase/2;A.__r=wheelDiameter/2;A.velocity=velocity;A.__wheelLeft=Wheel(Direction.LEFT,A.__r,calibrateLeft);A.__wheelRight=Wheel(Direction.RIGHT,A.__r,calibrateRight)
+	def __init__(A,wheelbase,wheelDiameter,velocity,calibrateLeft,calibrateRight):A.__d=wheelbase/2;A.__r=wheelDiameter/2;A.velocity=velocity;A.__wheelLeft=Wheel(Constants.LEFT,A.__r,calibrateLeft);A.__wheelRight=Wheel(Constants.RIGHT,A.__r,calibrateRight)
 	def emergencyShutdown(A):
 		try:A.newVelocity(0,0)
 		except BaseException as B:A.__wheelLeft.emergencyShutdown();A.__wheelRight.emergencyShutdown();raise B
@@ -236,7 +244,7 @@ class Robot:
 		else:
 			A.__timeTurnStop=0
 			if C=='L':D=.05;B=.02*A.getTurnCoef()
-			elif C=='R':A.__directionTurn=Direction.RIGHT;D=.05;B=-.02*A.getTurnCoef()
+			elif C=='R':A.__directionTurn=Constants.RIGHT;D=.05;B=-.02*A.getTurnCoef()
 			A.__turnLastAngular=B;A.motionControl.newVelocityIfChanged(D,B)
 	def controlTurn(A):
 		B=ticks_ms()
