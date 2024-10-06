@@ -438,7 +438,7 @@ class Robot:
     # Základní třída s robotem
     def __init__(self, leftCalibrate, rightCalibrate):
         self.state = Constants.ST_Start
-        self.stateExecComm = Constants.ST_Exit
+        self.stateExecComm = Constants.ST_Start
         velocity = Velocity()
         i2c.init(freq=400_000)
         self.__senzors = Senzors()
@@ -477,9 +477,7 @@ class Robot:
 
     def testBumber(self):
         # pokud jsme narazili tak zastav
-        if self.__senzors.getSenzor(Senzors.ObstaleLeft) or self.__senzors.getSenzor(
-            Senzors.ObstaleRight
-        ):
+        if self.__senzors.getSenzor(Senzors.ObstaleLeft) or self.__senzors.getSenzor(Senzors.ObstaleRight):
             self.motionControl.newVelocity(0, 0)
 
     def speedLimitation(self, speed):
@@ -519,8 +517,8 @@ class Robot:
         x = self.__timeTurn - 1
         return x * x * 0.08 + x * 0.45 + 1.0
 
-    def conditionChangeTurn(self, direction):
-        self.displayText(direction)
+    def conditionChangeTurn(self, direction, back):
+#        self.displayText(direction)
         # predpokladam ze jsem na care tak pojedu rychleji a nebudu zatacet
         forward = 0.10
         angular = 0
@@ -541,25 +539,27 @@ class Robot:
                 angular = -0.02 * self.getTurnCoef()
         # pokud se požadovaná úhlová rychlost změnila, požádáme ovladač motorů o změnu rychlosti
         self.__turnLastAngular = angular
+        if back:
+            forward *= -1
         self.motionControl.newVelocityIfChanged(forward, angular)
 
-    def rideLine(self):
+    def rideLine(self, back):
         # reguluj zatáčení podle sledovače čáry
         time = ticks_ms()
         if self.__regulatorTurn.isTimeout(time):
             self.__controlTurnTime = time
             if not self.__senzors.getSenzor(Senzors.LineTrackMiddle):
-                self.conditionChangeTurn("C")
+                self.conditionChangeTurn("C", back)
                 self.__timeTurn = 0
             else:
                 if not self.__senzors.getSenzor(Senzors.LineTrackLeft):
                     self.__timeTurn += 1
-                    self.conditionChangeTurn("L")
+                    self.conditionChangeTurn("L", back)
                 elif not self.__senzors.getSenzor(Senzors.LineTrackRight):
                     self.__timeTurn += 1
-                    self.conditionChangeTurn("R")
+                    self.conditionChangeTurn("R", back)
                 else:
-                    self.conditionChangeTurn("0")
+                    self.conditionChangeTurn("0", back)
 
     def update(self):
         self.motionControl.update()
@@ -567,63 +567,76 @@ class Robot:
 #        self.__sonar.update()
 #        self.__lightsControl.update()
         self.testBumber()
-#        self.controlSpeed()
 
+    def exitCrossRoads(self, direction):
+        angular = 0
+        forward = 0.1
+        if direction == Constants.BACK:
+            forward *= -1
+        if direction == Constants.LEFT:
+            angular = 0.1
+        if direction == Constants.RIGHT:
+            angular = -0.1
+        self.motionControl.newVelocityIfChanged(forward, angular)
 
-    def exitCrossRoads(self, direction, forwardSpeed):
         if self.__senzors.getSituationLine()==Constants.CrossRoads:
-            speed=0
-            if direction==Constants.BACK:
-                speed=-forwardSpeed
-            else:
-                speed=forwardSpeed
-            self.motionControl.newVelocityIfChanged(speed, 0)
+            self.__timeExitCRstart = ticks_ms()
             return False
+
+        if (direction==Constants.LEFT) or (direction==Constants.RIGHT):
+            # skoncime s popojizdenim az za chvili (abychom byli stredem otaceni nad krizovatkou)
+            if ticks_diff(ticks_ms(), self.__timeExitCRstart) < 300:
+                return False
         return True
 
-    def turningToLine(self, direction, lateralSenzor, angularSpeed):
-        senzor = Senzors.LineTrackMiddle
+    def turningToLine(self, direction, angularSpeed):
         if direction==Constants.LEFT:
             angular = angularSpeed
-            if lateralSenzor:
-                senzor = Senzors.LineTrackLeft
         if direction==Constants.RIGHT:
             angular = -angularSpeed
-            if lateralSenzor:
-                senzor = Senzors.LineTrackRight
         self.motionControl.newVelocityIfChanged(0, angular)
-        if not self.__senzors.getSenzor(senzor):
-            return True
+        # muzeme skoncit otaceni jen kdyz trva alespon nejakou dobu (prevence chyceni cary pred sebou)
+        if ticks_diff(ticks_ms(), self.__timeTurnStart) > 1000:
+            if not self.__senzors.getSenzor(Senzors.LineTrackMiddle):
+                return True
         return False
 
     #FIXME: Toto by asi melo byt nekde jinde nez ve tride Robot
-    def executeCommand(self, command, stateCommand):
+    def executeCommand(self, command):
         if (self.stateExecComm == Constants.ST_Success) or (self.stateExecComm == Constants.ST_Failure):
             self.stateExecComm = Constants.ST_Start
+            self.displayText("s")
 
         if self.stateExecComm == Constants.ST_Start:
             # zatim nemame nic co by jsme tu delali
             self.stateExecComm = Constants.ST_EC_ExitCrossRoads
+            self.stateExecComm = Constants.ST_EC_ExitCrossRoads
+            self.displayText("e")
 
-        if self.stateExecComm == Constants.ST_EC_ExitCrossRoads
+        if self.stateExecComm == Constants.ST_EC_ExitCrossRoads:
             # Popojed nebo couvni tak, aby jsi opustil krizovatku. A delej to tak dlouho dokud to neni hotove
-            isDone = self.exitCrossRoads(command, 0.05)
+            isDone = self.exitCrossRoads(command)
             if isDone:
                 if (command==Constants.LEFT) or (command==Constants.RIGHT):
                     # budeme se tocit
                     self.stateExecComm = Constants.ST_EC_Turn
+                    self.displayText("t")
                 else:
-                    self.stateExecComm = Constants.ST_Exit
+                    self.stateExecComm = Constants.ST_Success
+                    self.displayText("o")
+                    return True
 
-        if self.stateExecComm == Constants.ST_EC_Turn
-            isDone = self.turningToLine(command, True, 0.3)
-            if isDone:
-                self.stateExecComm = Constants.ST_EC_TurnToMiddleSenzor
+        if self.stateExecComm == Constants.ST_EC_Turn:
+            # zapamatujeme si kdy jsme zacali zatacet
+            self.__timeTurnStart = ticks_ms()
+            self.stateExecComm = Constants.ST_EC_TurnToMiddleSenzor
+            self.displayText("m")
 
-        if self.stateExecComm == Constants.ST_EC_TurnToMiddleSenzor
-            isDone = self.turningToLine(command, False, 0.3)
+        if self.stateExecComm == Constants.ST_EC_TurnToMiddleSenzor:
+            isDone = self.turningToLine(command, 0.3)
             if isDone:
                 self.stateExecComm = Constants.ST_Success
+                self.displayText("o")
                 return True
 
         return False
@@ -631,6 +644,8 @@ class Robot:
     #FIXME: Toto by asi melo byt nekde jinde nez ve tride Robot
     def stateMachine(self):
         nextCommand = Constants.LEFT
+        actualCommand = Constants.FORWARD
+        back = False
 
         if self.state == Constants.ST_Start:
             self.displayText("S")
@@ -638,18 +653,18 @@ class Robot:
             self.state = Constants.ST_RidingLine
 
         if self.state == Constants.ST_RidingLine:
-            self.rideLine()
+            self.rideLine(actualCommand == Constants.BACK)
             # zkontroluj jestli nejsme na krizovatce nebo jestli jsme se neztratili
             situation = self.__senzors.getSituationLine()
             if situation == Constants.CrossRoads:
-                self.state = Constants.ST_ReactionOnCrossRoads
+                self.state = Constants.ST_ExecuteCommand
                 self.displayText("D")
 
             elif situation == Constants.NONE:
                 self.state = Constants.ST_Failure
             # jinak zustavame a jedeme po care dal
 
-        if self.state == Constants.ST_ReactionOnCrossRoads:
+        if self.state == Constants.ST_ExecuteCommand:
             # zpracuj prikaz na krizovatce a delej to tak dlouho dokud to neni hotove
             isDone = self.executeCommand(nextCommand)
             if isDone:
@@ -682,6 +697,7 @@ if __name__ == "__main__":
                 break
             sleep(1)
         robot.motionControl.newVelocity(0, 0)
+        memory()
         print("Stop")
     except BaseException as e:
         if robot:

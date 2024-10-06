@@ -58,16 +58,6 @@ class Senzory:
         senzoricka_data = {}
 
         if not self.nova_verze:
-<<<<<<< HEAD
-            senzoricka_data[Konstanty.LV_ENKODER] = bitove_pole[9]
-            senzoricka_data[Konstanty.PR_ENKODER] = bitove_pole[8] #TODO pretipuj taky, ale otestuj!
-
-        senzoricka_data[Konstanty.LV_S_CARY] = bool(int(bitove_pole[7]))
-        senzoricka_data[Konstanty.PROS_S_CARY] = bool(int(bitove_pole[6]))
-        senzoricka_data[Konstanty.PR_S_CARY] = bool(int(bitove_pole[5]))
-        senzoricka_data[Konstanty.LV_IR] = bool(bool(bitove_pole[4]))
-        senzoricka_data[Konstanty.PR_IR] = bool(bool(bitove_pole[3]))
-=======
             senzoricka_data[K.LV_ENKODER] = bitove_pole[9]
             senzoricka_data[K.PR_ENKODER] = bitove_pole[8] #TODO pretipuj taky, ale otestuj!
 
@@ -76,7 +66,6 @@ class Senzory:
         senzoricka_data[K.PR_S_CARY] = bool(int(bitove_pole[5]))
         senzoricka_data[K.LV_IR] = bool(bool(bitove_pole[4]))
         senzoricka_data[K.PR_IR] = bool(bool(bitove_pole[3]))
->>>>>>> main
 
         return senzoricka_data
 
@@ -293,12 +282,7 @@ class Motor:
         P = 6
 
         self.aktualni_rychlost = self.__enkoder.vypocti_rychlost()
-<<<<<<< HEAD
-        # aktualni_rychlost bude vzdy pozitivni
-        # musim tedy kombinovat se smerem, kterym se pohybuji
-=======
 
->>>>>>> main
         if self.__pozadovana_uhlova_r_kola < 0:
             self.aktualni_rychlost *= -1
 
@@ -337,8 +321,6 @@ class Robot:
         self.__inicializovano = False
         self.__cas_minule_reg = ticks_us()
         self.__perioda_regulace = 1000000
-<<<<<<< HEAD
-=======
         self.__senzory = Senzory(nova_verze)
 
         self.__perioda_cary_us = 75000
@@ -346,7 +328,6 @@ class Robot:
         self.__posledni_cas_popojeti = 0
 
         self.svetla = SvetelnyModul()
->>>>>>> main
 
     def inicializuj(self):
         i2c.init(400000)
@@ -396,22 +377,6 @@ class Robot:
 
         if ticks_diff(ticks_us(), self.__cas_minule_reg) > self.__perioda_regulace:
             self.__cas_minule_reg = ticks_us()
-<<<<<<< HEAD
-            #self.__reguluj()
-
-    def __reguluj(self):
-
-        v, omega = self.__aktualni_rychlost()
-        error_omega = self.__uhlova_rychlost - omega
-        error_v = self.__dopredna_rychlost - v
-
-        P_om = 1
-        P_v = 1
-        u_om = P_om * error_omega
-        u_v = P_v * error_v
-        print("reguluju", u_v, u_om)
-        self.jed(u_v, u_om)
-=======
 
     def vycti_senzory_cary(self):
 
@@ -583,4 +548,3 @@ class SvetelnyModul:
         self.blinkry[3].vypni()
 
 
->>>>>>> main
