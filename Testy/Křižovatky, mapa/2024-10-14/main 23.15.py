@@ -790,6 +790,7 @@ def stateMachine():
 
 if __name__ == "__main__":
 
+    memory()
     print("Start")
     robotLocalizeAngular = 0
     robotLocalizeX = 0
@@ -802,7 +803,6 @@ if __name__ == "__main__":
     robot = None
     try:
         robot = Robot(leftCalibrate, rightCalibrate)
-
 #        while not button_b.was_pressed():
 #            robot.__senzors.update()
 #            robot.displayText(robot.__senzors.getSituationLineChar())
@@ -817,6 +817,7 @@ if __name__ == "__main__":
                 break
             sleep(1)
         robot.motionControl.newVelocity(0, 0)
+        memory()
         print("Stop")
     except BaseException as e:
         if robot:

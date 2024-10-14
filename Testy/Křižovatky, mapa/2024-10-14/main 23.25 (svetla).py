@@ -179,6 +179,159 @@ class Senzors:
             return Constants.Line
         return Constants.NONE
 
+class IndicatorState:
+    NONE = 0
+    SPACE = 1
+    LIGHT = 2
+
+    def __init__(self):
+        self.reset()
+
+    def set(self, value):
+        self.value = value
+        self.start = ticks_ms()
+
+    def reset(self):
+        self.set(self.NONE)
+
+    def isDifferent(self, other):
+        # je hodnota stavu rozdílná od předané?
+        return self.value != other
+
+    def timeout(self):
+        # vypršel čas na změnu stavu blinkru?
+        return ticks_diff(ticks_ms(), self.start) > 400
+
+    def change(self):
+        # změn stav blinkru
+        self.set(self.SPACE if self.value == self.LIGHT else self.LIGHT)
+
+    def update(self):
+        if self.value != self.NONE:
+            if self.timeout():
+                self.change()
+        else:
+            self.set(self.LIGHT)
+
+class Lights:
+    # Třída implementující ledky jako světla robota (používá knihovnu NeoPixel)
+    color_led_off = (0, 0, 0)
+    color_led_orange = (100, 35, 0)
+    color_led_white = (60, 60, 60)
+    color_led_white_hi = (255, 255, 255)
+    color_led_red = (60, 0, 0)
+    color_led_red_br = (255, 0, 0)
+
+    def __init__(self):
+        self.__np = NeoPixel(pin0, 8)
+        self.__writeTime = 0
+
+    def setColor(self, ledNo, color):
+        # nastav barvu pro jednu led-ku
+        self.__np[ledNo] = color
+
+    def setColorToLedList(self, ledList, color):
+        # nastav barvu pro seznam led-ek
+        for ledNo in ledList:
+            self.setColor(ledNo, color)
+
+    def isTimeout(self):
+        # vypršel čas na pravidelné zapsaní barev do ledek?
+        return ticks_diff(ticks_ms(), self.__writeTime) > 100
+
+    def write(self):
+        # zapiš nastavené barvy do led-ek
+        self.__np.write()
+        self.__writeTime = ticks_ms()
+
+class LightsControl:
+    # Třída implementující jednotlivá světla
+    # (blinkry, zpátečku, brzdy, potkávací a dálková světla)
+    ind_all = (1, 2, 4, 7)
+    ind_left = (1, 4)
+    ind_right = (2, 7)
+    head_lights = (0, 3)
+    back_lights = (5, 6)
+    inside_light = (0, 3, 5, 6)
+    reverse_lights = (5,)
+
+    def __init__(self, velocity):
+        self.__lights = Lights()
+        self.__indState = IndicatorState()
+        self.__velocity = velocity
+        self.setMain(Constants.DippedBeams)
+        self.setDirectionFromVelocity()
+        self.setReverseFromVelocity()
+        self.__isBrake = False
+        self.__brakeTime = 0
+        self.warning = False
+
+    def setMain(self, value):
+        # zapni typ hlavních světel (vypnuto, potkávací, dalková)
+        self.__main = value
+
+    def setDirectionFromVelocity(self):
+        # spočti směr blikání z požadované úhlové rychlosti robota
+        if self.__velocity.angular >= 0.4:
+            self.__indDirection = Direction.LEFT
+        elif self.__velocity.angular <= -0.4:
+            self.__indDirection = Direction.RIGHT
+        else:
+            self.__indDirection = Direction.NONE
+
+    def setReverseFromVelocity(self):
+        # spočti zapnutí couvacího světla z požadované dopředné rychlosti robota
+        self.__isReverse = self.__velocity.forward < 0.0
+
+    def setBrakeFromVelocity(self):
+        # spočti brzdové světlo z požadované dopředné rychlosti robota
+        if False:
+            self.__isBrake = True
+            self.__brakeTime = ticks_ms()
+
+    def isBrake(self):
+        # má svítit brzdové světlo?
+        if self.__isBrake:
+            diff = ticks_diff(ticks_ms(), self.__brakeTime)
+            if diff < 1_000:
+                return True
+            self.__isBrake = False
+        return False
+
+    def update(self):
+        self.setDirectionFromVelocity()
+        self.setReverseFromVelocity()
+        self.setBrakeFromVelocity()
+
+        backupState = self.__indState.value
+        if self.__indDirection != Constants.NONE or self.warning:
+            self.__indState.update()
+        else:
+            self.__indState.reset()
+        if self.__indState.isDifferent(backupState) or self.__lights.isTimeout():
+            if self.__indState.value == IndicatorState.LIGHT:
+                if self.__indDirection == Constants.LEFT or self.warning:
+                    self.__lights.setColorToLedList(self.ind_left, Lights.color_led_orange)
+                if self.__indDirection == Constants.RIGHT or self.warning:
+                    self.__lights.setColorToLedList(self.ind_right, Lights.color_led_orange)
+            else:
+                self.__lights.setColorToLedList(self.ind_all, Lights.color_led_off)
+            headColor = Lights.color_led_off
+            backColor = Lights.color_led_off
+            if self.__main == Constants.DippedBeams:
+                headColor = Lights.color_led_white
+                backColor = Lights.color_led_red
+            if self.__main == Constants.HighBeams:
+                headColor = Lights.color_led_white_hi
+                backColor = Lights.color_led_red
+            if self.isBrake():
+                backColor = Lights.color_led_red_br
+            self.__lights.setColorToLedList(self.head_lights, headColor)
+            self.__lights.setColorToLedList(self.back_lights, backColor)
+            if self.__isReverse:
+                self.__lights.setColorToLedList(self.reverse_lights, Lights.color_led_white)
+            self.__lights.write()
+
 class SpeedTicks:
     # Třída počítající rychlost z uložené historie tiků
     LIMIT = 20
@@ -470,7 +623,7 @@ class Robot:
 #        self.__sonar = Sonar()
         self.__regulatorDistance = RegulatorP(0.5, 500)
         self.__regulatorTurn = RegulatorP(0.5, 50)
-#        self.__lightsControl = LightsControl(velocity)
+        self.__lightsControl = LightsControl(velocity)
         self.motionControl = MotionControl(
             0.15, 0.067, velocity, leftCalibrate, rightCalibrate
         )
@@ -594,7 +747,7 @@ class Robot:
         self.motionControl.update()
         self.__senzors.update()
 #        self.__sonar.update()
-#        self.__lightsControl.update()
+        self.__lightsControl.update()
         self.testBumber()
 
     def exitCrossRoads(self, direction):
@@ -790,6 +943,7 @@ def stateMachine():
 
 if __name__ == "__main__":
 
+    memory()
     print("Start")
     robotLocalizeAngular = 0
     robotLocalizeX = 0
@@ -801,7 +955,9 @@ if __name__ == "__main__":
     rightCalibrate = CalibrateFactors(1.0, 110, 70, 12.259, 35.332)
     robot = None
     try:
+        memory()
         robot = Robot(leftCalibrate, rightCalibrate)
+        memory()
 
 #        while not button_b.was_pressed():
 #            robot.__senzors.update()
@@ -817,6 +973,7 @@ if __name__ == "__main__":
                 break
             sleep(1)
         robot.motionControl.newVelocity(0, 0)
+        memory()
         print("Stop")
     except BaseException as e:
         if robot:

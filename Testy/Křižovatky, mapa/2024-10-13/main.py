@@ -13,14 +13,11 @@ from microbit import (
 )
 from utime import ticks_ms, ticks_us, ticks_diff
 from machine import time_pulse_us
-from math import sin, cos
 import gc
 
 MOTOR_I2C_ADDR = 0x70
 TICKS_PER_CIRCLE = 40
-PI = 3.141592
-TwoPI = 2 * PI
-HalfPI = PI / 2
+TwoPI = 2 * 3.141592
 
 
 class Constants:
@@ -493,8 +490,7 @@ class Robot:
         return 0.00898 * pin2.read_analog()
 
     def displayText(self, text):
-        pass
-#        display.show(text, delay=0, wait=False)
+        display.show(text, delay=0, wait=False)
 #        print(text)
 
 #    def getObstacleDistance(self):
@@ -546,23 +542,23 @@ class Robot:
     def conditionChangeTurn(self, direction, back):
 #        self.displayText(direction)
         # predpokladam ze jsem na care tak pojedu rychleji a nebudu zatacet
-        forward = 0.1
+        forward = 0.15
         angular = 0
         if direction == "0":
             # pokud jsem mimo caru jed pomaleji ale zatacej stejne jako posledne
-            forward = 0.05
+            forward = 0.07
             angular = self.__turnLastAngular
         else:
             self.__timeTurnStop = 0
             if direction == "L":
                 # vidim caru pod levym senzorem, zpomal a zatoc doleva
-                forward = 0.05
-                angular = 0.01 * self.getTurnCoef()
+                forward = 0.07
+                angular = 0.02 * self.getTurnCoef()
             if direction == "R":
                 # vidim caru pod pravym senzorem, zpomal a zatoc doprava
                 self.__directionTurn = Constants.RIGHT
-                forward = 0.05
-                angular = -0.01 * self.getTurnCoef()
+                forward = 0.07
+                angular = -0.02 * self.getTurnCoef()
         # pokud se požadovaná úhlová rychlost změnila, požádáme ovladač motorů o změnu rychlosti
         self.__turnLastAngular = angular
         if back:
@@ -634,43 +630,6 @@ def memory():
     gc.collect()
     print(gc.mem_free())
 
-def waitToKey():
-    while not button_b.was_pressed():
-        pass
-
-def localize_angular(command):
-    global robotLocalizeAngular
-    # lokalizuj pozici po zmene smeru robota
-    if command == Constants.LEFT:
-        robotLocalizeAngular += HalfPI
-        if robotLocalizeAngular > PI:
-            robotLocalizeAngular -= TwoPI
-    if command == Constants.RIGHT:
-        robotLocalizeAngular -= HalfPI
-        if robotLocalizeAngular <= -PI:
-            robotLocalizeAngular += TwoPI
-
-def localize_xy(command):
-    global robotLocalizeAngular
-    global robotLocalizeX
-    global robotLocalizeY
-    # lokalizuj pozici po pohybu danym smerem
-    if command == Constants.BACK:        # pokud byl posledni prikaz couvej, musis odecist cestu
-        robotLocalizeX -= int(cos(robotLocalizeAngular))
-        robotLocalizeY -= int(sin(robotLocalizeAngular))
-    else:                               # v ostatnich pripadech jsme jeli dopredu ve smeru robota
-        robotLocalizeX += int(cos(robotLocalizeAngular))
-        robotLocalizeY += int(sin(robotLocalizeAngular))
-
-def print_localize(kde):
-    global robotLocalizeAngular
-    global robotLocalizeX
-    global robotLocalizeY
-    display.clear()
-    display.set_pixel(robotLocalizeY, robotLocalizeX, 9)
-#    print("lokalizace" + kde + ":", robotLocalizeX, robotLocalizeY, int(robotLocalizeAngular / PI * 180))
-
-
 def executeCommand(command):
     global timeTurnStart
     global stateExecComm
@@ -705,7 +664,7 @@ def executeCommand(command):
         robot.displayText("m")
 
     if stateExecComm == Constants.ST_EC_TurnToMiddleSenzor:
-        isDone = robot.turningToLine(command, 0.41, timeTurnStart)
+        isDone = robot.turningToLine(command, 0.4, timeTurnStart)
         if isDone:
             stateExecComm = Constants.ST_Success
             robot.displayText("o")
@@ -713,67 +672,35 @@ def executeCommand(command):
 
     return False
 
-def getActualCommand():
-    global commands
-    global commandsIndex
-
-    if commandsIndex < 0:
-        return Constants.FORWARD
-    return commands[commandsIndex]
-
-def nextCommand():
-    global commands
-    global commandsIndex
-
-    commandsIndex += 1
-    return commandsIndex >= len(commands)
-
 def stateMachine():
     global state
     global robot
 
+    nextCommand = Constants.LEFT
+    actualCommand = Constants.FORWARD
     back = False
 
     if state == Constants.ST_Start:
-        print_localize("1")
-        robot.displayText("1")
-        robot.displayText("L")
+        robot.displayText("B")
         # nemame tu co delat, jdeme si zajezdit po care
         state = Constants.ST_RidingLine
-        waitToKey()
 
     if state == Constants.ST_RidingLine:
-        robot.rideLine(getActualCommand() == Constants.BACK)
+        robot.rideLine(actualCommand == Constants.BACK)
         # zkontroluj jestli nejsme na krizovatce nebo jestli jsme se neztratili
         situation = robot.getSituationLine()
         if situation == Constants.CrossRoads:
-            state = Constants.ST_LocalizeBeforeExecCommand
+            state = Constants.ST_ExecuteCommand
             robot.displayText("D")
         elif situation == Constants.NONE:
             state = Constants.ST_Failure
         # jinak zustavame a jedeme po care dal
 
-    if state == Constants.ST_LocalizeBeforeExecCommand:
-        localize_xy(getActualCommand())
-        robot.displayText("2")
-        print_localize("2")
-        isEnd = nextCommand()
-        if isEnd:
-            state = Constants.ST_Success
-        else:
-            state = Constants.ST_ExecuteCommand
-
     if state == Constants.ST_ExecuteCommand:
         # zpracuj prikaz na krizovatce a delej to tak dlouho dokud to neni hotove
-        isDone = executeCommand(getActualCommand())
+        isDone = executeCommand(nextCommand)
         if isDone:
-            state = Constants.ST_LocalizeAfterExecCommand
-
-    if state == Constants.ST_LocalizeAfterExecCommand:
-        localize_angular(getActualCommand())
-        robot.displayText("3")
-        print_localize("3")
-        state = Constants.ST_RidingLine
+            state = Constants.ST_RidingLine
 
     if state == Constants.ST_Success:
         robot.displayText("S")
@@ -790,19 +717,13 @@ def stateMachine():
 
 if __name__ == "__main__":
 
+    memory()
     print("Start")
-    robotLocalizeAngular = 0
-    robotLocalizeX = 0
-    robotLocalizeY = 0
-    commands = [Constants.FORWARD, Constants.FORWARD, Constants.LEFT, Constants.LEFT, Constants.FORWARD, Constants.FORWARD, Constants.RIGHT, Constants.RIGHT, Constants.FORWARD, Constants.FORWARD ]
-    commandsIndex = -1
-
     leftCalibrate = CalibrateFactors(1.0, 110, 70, 11.692, 28.643)
     rightCalibrate = CalibrateFactors(1.0, 110, 70, 12.259, 35.332)
     robot = None
     try:
         robot = Robot(leftCalibrate, rightCalibrate)
-
 #        while not button_b.was_pressed():
 #            robot.__senzors.update()
 #            robot.displayText(robot.__senzors.getSituationLineChar())
@@ -817,6 +738,7 @@ if __name__ == "__main__":
                 break
             sleep(1)
         robot.motionControl.newVelocity(0, 0)
+        memory()
         print("Stop")
     except BaseException as e:
         if robot:

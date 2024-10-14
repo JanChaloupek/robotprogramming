@@ -1,13 +1,16 @@
-_B=True
-_A=False
+_B=False
+_A=True
 from neopixel import NeoPixel
 from microbit import i2c,pin0,pin14,pin15,button_a,button_b,sleep,display
 from utime import ticks_ms,ticks_us,ticks_diff
 from machine import time_pulse_us
+from math import sin,cos
 import gc
 MOTOR_I2C_ADDR=112
 TICKS_PER_CIRCLE=40
-TwoPI=6.283184
+PI=3.141592
+TwoPI=2*PI
+HalfPI=PI/2
 class Constants:NONE=0;LEFT=1;RIGHT=2;FORWARD=11;BACK=12;DippedBeams=31;HighBeams=32;TicksPerSecond=41;CirclePerSecond=42;RadianPerSecond=43;MeterPerSecond=44;Line=51;CrossRoads=52;ST_Start=100;ST_Success=101;ST_Failure=102;ST_RidingLine=111;ST_DetectCrossRoads=112;ST_LocalizeBeforeExecCommand=113;ST_ExecuteCommand=114;ST_LocalizeAfterExecCommand=116;ST_EC_ExitCrossRoads=121;ST_EC_Turn=122;ST_EC_TurnToMiddleSenzor=123
 class Velocity:
 	def __init__(A):A.forward=.0;A.angular=.0
@@ -19,9 +22,9 @@ class RegulatorP:
 	def getActionIntervention(A,time,inputNominal,inputActual):A.__lastRegulationTime=time;B=inputNominal-inputActual;C=A.__k*B;return C
 class Senzors:
 	ObstaleRight=64;ObstaleLeft=32;LineTrackRight=16;LineTrackMiddle=8;LineTrackLeft=4;LineTrackAll=28
-	def __init__(A):A.__timeout_ms=33;A.__timeNotLine=0;A.readData()
+	def __init__(A):A.__timeout_ms=50;A.__timeNotLine=0;A.__data=0;A.readData()
 	def readData(A,time=0):
-		A.__data=i2c.read(56,1)[0]
+		A.__dataPrev=A.__data;A.__data=i2c.read(56,1)[0]^Senzors.LineTrackAll
 		if time==0:A.__lastTimeRead=ticks_ms()
 		else:A.__lastTimeRead=time
 	def getData(A,mask):return A.__data&mask
@@ -30,19 +33,25 @@ class Senzors:
 	def update(A):
 		B=ticks_ms()
 		if A.isTimeout(B):A.readData(B)
+	def getSituationLineChar(B):
+		A=0
+		if B.getSenzor(Senzors.LineTrackLeft):A+=1
+		if B.getSenzor(Senzors.LineTrackMiddle):A+=2
+		if B.getSenzor(Senzors.LineTrackRight):A+=4
+		return str(A)
 	def getSituationLine(A):
 		B=0
-		if not A.getSenzor(Senzors.LineTrackLeft):B+=1
-		if not A.getSenzor(Senzors.LineTrackMiddle):B+=1
-		if not A.getSenzor(Senzors.LineTrackRight):B+=1
+		if A.getSenzor(Senzors.LineTrackLeft):B+=1
+		if A.getSenzor(Senzors.LineTrackMiddle):B+=1
+		if A.getSenzor(Senzors.LineTrackRight):B+=1
 		if B>=2:A.__timeNotLine=0;return Constants.CrossRoads
 		if B==1:A.__timeNotLine=0;return Constants.Line
 		if A.__timeNotLine==0:A.__timeNotLine=ticks_ms()
-		if ticks_diff(ticks_ms(),A.__timeNotLine)<=1000:return Constants.Line
+		if ticks_diff(ticks_ms(),A.__timeNotLine)<=2000:return Constants.Line
 		return Constants.NONE
 class SpeedTicks:
 	LIMIT=20
-	def __init__(A):A.__index=-1;A.__times=[0]*A.LIMIT;A.__ticks=[0]*A.LIMIT;A.__countValues=-1;A.__lastTime=-1;A.isStopped=_B
+	def __init__(A):A.__index=-1;A.__times=[0]*A.LIMIT;A.__ticks=[0]*A.LIMIT;A.__countValues=-1;A.__lastTime=-1;A.isStopped=_A
 	def getNewIndex(A,time):
 		B=int(time/100000)
 		if B==A.__lastTime:return-1
@@ -145,10 +154,10 @@ class MotionControl:
 	def newVelocity(A,forward,angular):C=angular;B=forward;A.velocity.forward=B;A.velocity.angular=C;A.__wheelLeft.rideSpeed(B-A.__d*C);A.__wheelRight.rideSpeed(B+A.__d*C)
 	def update(A):A.__wheelLeft.update();A.__wheelRight.update()
 class Robot:
-	def __init__(A,leftCalibrate,rightCalibrate):A.state=Constants.ST_Start;A.stateExecComm=Constants.ST_Start;B=Velocity();i2c.init(freq=400000);A.__senzors=Senzors();A.__regulatorDistance=RegulatorP(.5,500);A.__regulatorTurn=RegulatorP(.5,50);A.motionControl=MotionControl(.15,.067,B,leftCalibrate,rightCalibrate);A.motionControl.newVelocity(0,0);A.__controlTurnTime=ticks_ms();A.__turnLastAngular=0;A.__timeTurn=0;A.__timeTurnStop=0;A.displayText('X')
+	def __init__(A,leftCalibrate,rightCalibrate):B=Velocity();i2c.init(freq=400000);A.__senzors=Senzors();A.__regulatorDistance=RegulatorP(.5,500);A.__regulatorTurn=RegulatorP(.5,50);A.motionControl=MotionControl(.15,.067,B,leftCalibrate,rightCalibrate);A.motionControl.newVelocity(0,0);A.__controlTurnTime=ticks_ms();A.__turnLastAngular=0;A.__timeTurn=0;A.__timeTurnStop=0;A.displayText('X')
 	def emergencyShutdown(A):A.motionControl.emergencyShutdown();A.displayText('S')
 	def supplyVoltage(A):return .00898*pin2.read_analog()
-	def displayText(A,text):display.show(text,delay=0,wait=_A);print(text)
+	def displayText(A,text):0
 	def testBumber(A):
 		if A.__senzors.getSenzor(Senzors.ObstaleLeft)or A.__senzors.getSenzor(Senzors.ObstaleRight):A.motionControl.newVelocity(0,0)
 	def speedLimitation(B,speed):
@@ -173,8 +182,8 @@ class Robot:
 		if D=='0':B=.05;C=A.__turnLastAngular
 		else:
 			A.__timeTurnStop=0
-			if D=='L':B=.05;C=.02*A.getTurnCoef()
-			if D=='R':A.__directionTurn=Constants.RIGHT;B=.05;C=-.02*A.getTurnCoef()
+			if D=='L':B=.05;C=.01*A.getTurnCoef()
+			if D=='R':A.__directionTurn=Constants.RIGHT;B=.05;C=-.01*A.getTurnCoef()
 		A.__turnLastAngular=C
 		if back:B*=-1
 		A.motionControl.newVelocityIfChanged(B,C)
@@ -182,10 +191,11 @@ class Robot:
 		B=back;C=ticks_ms()
 		if A.__regulatorTurn.isTimeout(C):
 			A.__controlTurnTime=C
-			if not A.__senzors.getSenzor(Senzors.LineTrackMiddle):A.conditionChangeTurn('C',B);A.__timeTurn=0
-			elif not A.__senzors.getSenzor(Senzors.LineTrackLeft):A.__timeTurn+=1;A.conditionChangeTurn('L',B)
-			elif not A.__senzors.getSenzor(Senzors.LineTrackRight):A.__timeTurn+=1;A.conditionChangeTurn('R',B)
+			if A.__senzors.getSenzor(Senzors.LineTrackMiddle):A.conditionChangeTurn('C',B);A.__timeTurn=0
+			elif A.__senzors.getSenzor(Senzors.LineTrackLeft):A.__timeTurn+=1;A.conditionChangeTurn('L',B)
+			elif A.__senzors.getSenzor(Senzors.LineTrackRight):A.__timeTurn+=1;A.conditionChangeTurn('R',B)
 			else:A.conditionChangeTurn('0',B)
+	def getSituationLine(A):return A.__senzors.getSituationLine()
 	def update(A):A.motionControl.update();A.__senzors.update();A.testBumber()
 	def exitCrossRoads(B,direction):
 		A=direction;C=0;D=.1
@@ -193,54 +203,80 @@ class Robot:
 		if A==Constants.LEFT:C=.1
 		if A==Constants.RIGHT:C=-.1
 		B.motionControl.newVelocityIfChanged(D,C)
-		if B.__senzors.getSituationLine()==Constants.CrossRoads:B.__timeExitCRstart=ticks_ms();return _A
+		if B.getSituationLine()==Constants.CrossRoads:B.__timeExitCRstart=ticks_ms();return _B
 		if A==Constants.LEFT or A==Constants.RIGHT:
-			if ticks_diff(ticks_ms(),B.__timeExitCRstart)<300:return _A
-		return _B
-	def turningToLine(A,direction,angularSpeed):
+			if ticks_diff(ticks_ms(),B.__timeExitCRstart)<300:return _B
+		return _A
+	def turningToLine(A,direction,angularSpeed,timeTurnStart):
 		C=angularSpeed;B=direction
 		if B==Constants.LEFT:D=C
 		if B==Constants.RIGHT:D=-C
 		A.motionControl.newVelocityIfChanged(0,D)
-		if ticks_diff(ticks_ms(),A.__timeTurnStart)>1000:
-			if not A.__senzors.getSenzor(Senzors.LineTrackMiddle):return _B
-		return _A
-	def executeCommand(A,command):
-		B=command
-		if A.stateExecComm==Constants.ST_Success or A.stateExecComm==Constants.ST_Failure:A.stateExecComm=Constants.ST_Start;A.displayText('s')
-		if A.stateExecComm==Constants.ST_Start:A.stateExecComm=Constants.ST_EC_ExitCrossRoads;A.stateExecComm=Constants.ST_EC_ExitCrossRoads;A.displayText('e')
-		if A.stateExecComm==Constants.ST_EC_ExitCrossRoads:
-			C=A.exitCrossRoads(B)
-			if C:
-				if B==Constants.LEFT or B==Constants.RIGHT:A.stateExecComm=Constants.ST_EC_Turn;A.displayText('t')
-				else:A.stateExecComm=Constants.ST_Success;A.displayText('o');return _B
-		if A.stateExecComm==Constants.ST_EC_Turn:A.__timeTurnStart=ticks_ms();A.stateExecComm=Constants.ST_EC_TurnToMiddleSenzor;A.displayText('m')
-		if A.stateExecComm==Constants.ST_EC_TurnToMiddleSenzor:
-			C=A.turningToLine(B,.3)
-			if C:A.stateExecComm=Constants.ST_Success;A.displayText('o');return _B
-		return _A
-	def stateMachine(A):
-		C=Constants.LEFT;D=Constants.FORWARD;F=_A
-		if A.state==Constants.ST_Start:A.displayText('S');A.state=Constants.ST_RidingLine
-		if A.state==Constants.ST_RidingLine:
-			A.rideLine(D==Constants.BACK);B=A.__senzors.getSituationLine()
-			if B==Constants.CrossRoads:A.state=Constants.ST_ExecuteCommand;A.displayText('D')
-			elif B==Constants.NONE:A.state=Constants.ST_Failure
-		if A.state==Constants.ST_ExecuteCommand:
-			E=A.executeCommand(C)
-			if E:A.state=Constants.ST_RidingLine
-		if A.state==Constants.ST_Success or A.state==Constants.ST_Failure:A.displayText('E');A.motionControl.newVelocity(0,0);return _B
-		return _A
+		if ticks_diff(ticks_ms(),timeTurnStart)>1000:
+			if A.__senzors.getSenzor(Senzors.LineTrackMiddle):return _A
+		return _B
 def memory():gc.collect();print(gc.mem_free())
+def waitToKey():
+	while not button_b.was_pressed():0
+def localize_angular(command):
+	A=command;global robotLocalizeAngular
+	if A==Constants.LEFT:
+		robotLocalizeAngular+=HalfPI
+		if robotLocalizeAngular>PI:robotLocalizeAngular-=TwoPI
+	if A==Constants.RIGHT:
+		robotLocalizeAngular-=HalfPI
+		if robotLocalizeAngular<=-PI:robotLocalizeAngular+=TwoPI
+def localize_xy(command):
+	global robotLocalizeAngular;global robotLocalizeX;global robotLocalizeY
+	if command==Constants.BACK:robotLocalizeX-=int(cos(robotLocalizeAngular));robotLocalizeY-=int(sin(robotLocalizeAngular))
+	else:robotLocalizeX+=int(cos(robotLocalizeAngular));robotLocalizeY+=int(sin(robotLocalizeAngular))
+def print_localize(kde):global robotLocalizeAngular;global robotLocalizeX;global robotLocalizeY;display.clear();display.set_pixel(robotLocalizeY,robotLocalizeX,9)
+def executeCommand(command):
+	A=command;global timeTurnStart;global stateExecComm;global robot
+	if stateExecComm==Constants.ST_Success or stateExecComm==Constants.ST_Failure:stateExecComm=Constants.ST_Start;robot.displayText('s')
+	if stateExecComm==Constants.ST_Start:stateExecComm=Constants.ST_EC_ExitCrossRoads;robot.displayText('e')
+	if stateExecComm==Constants.ST_EC_ExitCrossRoads:
+		B=robot.exitCrossRoads(A)
+		if B:
+			if A==Constants.LEFT or A==Constants.RIGHT:stateExecComm=Constants.ST_EC_Turn;robot.displayText('t')
+			else:stateExecComm=Constants.ST_Success;robot.displayText('o');return _A
+	if stateExecComm==Constants.ST_EC_Turn:timeTurnStart=ticks_ms();stateExecComm=Constants.ST_EC_TurnToMiddleSenzor;robot.displayText('m')
+	if stateExecComm==Constants.ST_EC_TurnToMiddleSenzor:
+		B=robot.turningToLine(A,.41,timeTurnStart)
+		if B:stateExecComm=Constants.ST_Success;robot.displayText('o');return _A
+	return _B
+def getActualCommand():
+	global commands;global commandsIndex
+	if commandsIndex<0:return Constants.FORWARD
+	return commands[commandsIndex]
+def nextCommand():global commands;global commandsIndex;commandsIndex+=1;return commandsIndex>=len(commands)
+def stateMachine():
+	global state;global robot;D=_B
+	if state==Constants.ST_Start:print_localize('1');robot.displayText('1');robot.displayText('L');state=Constants.ST_RidingLine;waitToKey()
+	if state==Constants.ST_RidingLine:
+		robot.rideLine(getActualCommand()==Constants.BACK);A=robot.getSituationLine()
+		if A==Constants.CrossRoads:state=Constants.ST_LocalizeBeforeExecCommand;robot.displayText('D')
+		elif A==Constants.NONE:state=Constants.ST_Failure
+	if state==Constants.ST_LocalizeBeforeExecCommand:
+		localize_xy(getActualCommand());robot.displayText('2');print_localize('2');B=nextCommand()
+		if B:state=Constants.ST_Success
+		else:state=Constants.ST_ExecuteCommand
+	if state==Constants.ST_ExecuteCommand:
+		C=executeCommand(getActualCommand())
+		if C:state=Constants.ST_LocalizeAfterExecCommand
+	if state==Constants.ST_LocalizeAfterExecCommand:localize_angular(getActualCommand());robot.displayText('3');print_localize('3');state=Constants.ST_RidingLine
+	if state==Constants.ST_Success:robot.displayText('S');robot.motionControl.newVelocity(0,0);return _A
+	if state==Constants.ST_Failure:robot.displayText('F');robot.motionControl.newVelocity(0,0);return _A
+	return _B
 if __name__=='__main__':
-	memory();print('Start');leftCalibrate=CalibrateFactors(1.,110,70,11.692,28.643);rightCalibrate=CalibrateFactors(1.,110,70,12.259,30.332);robot=None
+	print('Start');robotLocalizeAngular=0;robotLocalizeX=0;robotLocalizeY=0;commands=[Constants.FORWARD,Constants.FORWARD,Constants.LEFT,Constants.LEFT,Constants.FORWARD,Constants.FORWARD,Constants.RIGHT,Constants.RIGHT,Constants.FORWARD,Constants.FORWARD];commandsIndex=-1;leftCalibrate=CalibrateFactors(1.,110,70,11.692,28.643);rightCalibrate=CalibrateFactors(1.,110,70,12.259,35.332);robot=None
 	try:
-		robot=Robot(leftCalibrate,rightCalibrate);lastPrint=ticks_ms()
+		robot=Robot(leftCalibrate,rightCalibrate);state=Constants.ST_Start;stateExecComm=Constants.ST_Start
 		while not button_a.was_pressed():
-			robot.update();isEnd=robot.stateMachine()
+			robot.update();isEnd=stateMachine()
 			if isEnd:break
 			sleep(1)
-		robot.motionControl.newVelocity(0,0);memory();print('Stop')
+		robot.motionControl.newVelocity(0,0);print('Stop')
 	except BaseException as e:
 		if robot:robot.emergencyShutdown()
 		print('Exception');raise e
