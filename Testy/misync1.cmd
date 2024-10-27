@@ -4,7 +4,6 @@ setlocal enabledelayedexpansion
 set help_flag=0
 set quick_flag=0
 set clean_flag=0
-set pure_flag=0
 
 rem Process params from CLI
 :CheckParams
@@ -25,9 +24,6 @@ if "%1"=="/clean" set clean_flag=1
 if "%1"=="--clean" set clean_flag=1
 if "%1"=="/c" set clean_flag=1
 if "%1"=="c" set clean_flag=1
-
-if "%1"=="p" set pure_flag=1
-
 
 shift
 goto CheckParams
@@ -57,15 +53,14 @@ rem Clean all files in microbit
 
 rem Prepare folders
 (
-	if not exist .dist (
-		mkdir .dist
+	if not exist dist (
+		mkdir dist
 		echo Dist folder created
 	)
-	cd .dist
+	cd dist
 	if exist transfer rmdir transfer /S /Q
 	mkdir transfer
 	if not exist temp mkdir temp
-	if not exist transferall mkdir transferall
 	if not exist sha1 mkdir sha1
 	cd ..
 )
@@ -80,10 +75,10 @@ rem Prepare files to tranfer to microbit
 
 	for %%f in (*.py) do (
 
-		certutil -hashfile %%f SHA1 > .dist/temp/sha1.txt
+		certutil -hashfile %%f SHA1 > dist/temp/sha1.txt
 
 		set "counter=0"
-		for /f "tokens=*" %%a in (.dist/temp/sha1.txt) do (
+		for /f "tokens=*" %%a in (dist/temp/sha1.txt) do (
 			set "transferFile=0"
 
 			if !quick_flag! EQU 0 (
@@ -93,10 +88,10 @@ rem Prepare files to tranfer to microbit
 			set /a counter+=1
 		    if !counter! equ 2 (
 
-		    	if not exist .dist/sha1/%%f (
+		    	if not exist dist/sha1/%%f (
 		    		set /a transferFile=1
 		    	) else (
-					for /f "delims=" %%b in (.dist/sha1/%%f) do (
+					for /f "delims=" %%b in (dist/sha1/%%f) do (
 						if %%a neq %%b (
 							set /a transferFile=1
 						)
@@ -104,17 +99,9 @@ rem Prepare files to tranfer to microbit
 		    	)
 		    	echo|set /p=" # %%f ...."
 			    if !transferFile! equ 1 (
-			    	echo %%a>.dist/sha1/%%f
-			    	if !pure_flag! equ 1 (
-			    		copy %%f .dist\transferall\ >NUL
-						echo  [Copied]
-			    	) else (
-						:: pyminify %%f --output ./.dist/transferall/%%f --remove-literal-statements --rename-globals --remove-asserts --remove-debug >NUL
-						pyminify %%f --output ./.dist/transferall/%%f >NUL
-						echo  [Minimized]
-			    	)
-			    	copy .dist\transferall\%%f .dist\transfer\ >NUL
-					
+					echo %%a>dist/sha1/%%f
+					pyminify %%f --output ./dist/transfer/%%f >NUL
+					echo  [Minimized]
 				) else (
 					echo  [Skipped]
 				)
@@ -126,16 +113,16 @@ rem Prepare files to tranfer to microbit
 rem Transfer files to microbit
 (
 	set /a pocet=0
-	for %%a in (.dist/transfer/*.py) do set /a pocet+=1
+	for %%a in (dist/transfer/*.py) do set /a pocet+=1
 
 	echo.
 	echo Transfer files: %pocet%
 
-	(for %%f in (.dist/transfer/*.py) do (
+	(for %%f in (dist/transfer/*.py) do (
 		echo|set /p=" # %%f ...."
 		
-		ufs.exe put ./.dist/transfer/%%f>.dist/temp/%%f
-		for %%I in (.dist/temp/%%f) do set /a size=%%~zI
+		ufs.exe put ./dist/transfer/%%f>dist/temp/%%f
+		for %%I in (dist/temp/%%f) do set /a size=%%~zI
 		
 		if !size! NEQ 0 (
 			echo  [ERROR]
@@ -146,13 +133,13 @@ rem Transfer files to microbit
 )
 :retry
 (
-	for %%f in (.dist/temp/*.py) do (
-		for %%I in (.dist/temp/%%f) do set /a size=%%~zI
+	for %%f in (dist/temp/*.py) do (
+		for %%I in (dist/temp/%%f) do set /a size=%%~zI
 		
 		if !size! NEQ 0 (
 			echo|set /p=" # %%f ...."
-			ufs.exe put ./.dist/transfer/%%f>.dist/temp/%%f
-			for %%I in (.dist/temp/%%f) do set /a size=%%~zI
+			ufs.exe put ./dist/transfer/%%f>dist/temp/%%f
+			for %%I in (dist/temp/%%f) do set /a size=%%~zI
 			
 			if !size! NEQ 0 (
 				echo  [ERROR]
@@ -163,34 +150,6 @@ rem Transfer files to microbit
 		)
 	)
 )
-
-(
-	set /a sizeAll=0
-	for %%f in (.dist/transferall/*.py) do (
-		for %%I in (.dist/transferall/%%f) do set /a size=%%~zI
-		set /a sizeAll+=size
-	)
-
-	set totalLength=24000
-	set /a max = 20
-	set /a hashs = !sizeAll!*!max!/!totalLength!
-	set /a precent = !sizeAll!*100/!totalLength!
-	
-	set progressBar=[
-	:: Vyplnění podle hodnoty A
-	for /l %%i in (1,1,!hashs!) do (
-		set progressBar=!progressBar!#
-	)
-	for /l %%i in (!hashs!,1,!max!) do (
-	    set progressBar=!progressBar!-
-	)
-	set progressBar=!progressBar!]
-	echo.
-	echo Used space: !progressBar! !precent! %%
-	
-)
-
-:: repl
 
 exit /b 0
 
