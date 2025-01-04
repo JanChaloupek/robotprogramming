@@ -12,6 +12,8 @@ from microbit import sleep
 np = NeoPixel(pin0, 8)
 
 # tento cyklus udela to, ze prvni ledka bude blikat s periodou 1s
+# POZOR! Musite si zapnout napajeni z baterie
+
 while True:
     # s objektem typu NeoPixel se pracuje stejne jako s polem
     # micropython rozlisuje mezi "list" a "array", coz jsou oba priklday polem
